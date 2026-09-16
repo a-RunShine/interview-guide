@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 2 课 · 第一刀：让被禁用的测试活过来</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="lesson-head">
+    <div class="course-tag">
+      <span>InterviewGuide 面试准备</span>
+      <span class="sep">/</span>
+      <span>阶段 0 · 地基</span>
+      <span class="sep">/</span>
+      <span>第 2 课</span>
+    </div>
+    <h1>第一刀：让被禁用的测试活过来</h1>
+    <p class="subtitle">本课的作业不是读代码，是<strong>产出一个能在面试里讲 3 分钟的改动</strong>。约 1 小时。</p>
+  </header>
+
+  <p class="lede">你在第 1 课选的框架是「如实说开源 + 我的二次开发」。要让它成立，你需要一个真实的改动。<strong>现在有一个比 <code>end_phase</code> 好得多的目标。</strong></p>
+
+  <h2><span class="num">1</span>你要交付什么</h2>
+
+  <div class="card">
+    <p class="card-title">一句话任务</p>
+    <p style="font-size:1.05rem;margin-bottom:.7rem">把 <code>VoiceInterviewServicePauseTest</code> 这个<strong>空的 @Disabled 占位类</strong>，重写成 6 个真实跑得起来的单元测试，覆盖 <code>pauseSession</code> / <code>resumeSession</code> 的全部分支。</p>
+    <p style="margin-bottom:0;color:var(--ink-soft);font-size:.92rem">目标文件：<br>
+    <code>app/src/test/java/interview/guide/modules/voiceinterview/service/VoiceInterviewServicePauseTest.java</code></p>
+  </div>
+
+  <h4>验收标准（对着这三条交作业）</h4>
+  <ol class="steps">
+    <li>6 个用例全部通过，没有任何 <code>@Disabled</code></li>
+    <li>全量测试的<strong>通过数从 16 上升</strong>，跳过数从 44 下降</li>
+    <li>你能不看书，口头讲出「为什么旧测试会 NPE」——这是本课真正要学的东西</li>
+  </ol>
+
+  <h2><span class="num">2</span>证据：你的测试套件 73% 是空转的</h2>
+
+  <p>你上午跑的那次确实是绿的，这点没错。但绿的数字长这样：</p>
+
+  <table>
+    <thead><tr><th style="width:44%">测试类</th><th style="width:14%">测试数</th><th style="width:14%">跳过</th><th>注释写的原因</th></tr></thead>
+    <tbody>
+      <tr><td><code>VoiceInterviewServiceTest</code>（11 个 @Nested）</td><td>43</td><td><strong>43</strong></td><td>构造函数新增依赖未注入 mock，NPE，留作下一步 PR</td></tr>
+      <tr><td><code>DashscopeLlmServiceTest</code></td><td>1</td><td>1</td><td>RolePrompt 在 e6bebe7 被移除；构造签名变更</td></tr>
+      <tr><td><code>VoiceInterviewServicePauseTest</code></td><td>1</td><td>1</td><td>构造签名在多次重构后不再是 4 参</td></tr>
+      <tr><td><code>VoiceInterviewPromptServiceTest</code></td><td>1</td><td>1</td><td>RolePrompt / getRolePrompt 在 e6bebe7 被移除</td></tr>
+      <tr><td colspan="2"><strong>合计</strong></td><td><strong>44 / 60</strong></td><td>剩下 16 个才是真跑的</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--risk">
+    <span class="callout-label">为什么 BUILD SUCCESSFUL 会骗人</span>
+    <p style="margin-bottom:0">被 <code>@Disabled</code> 跳过的测试<strong>不产生失败</strong>，所以构建照样成功。你看到的绿色，是「没有失败」，不是「验证过了」。
+    这两件事在面试里经常被混为一谈——能主动指出这个区别，本身就是个不错的信号。</p>
+  </div>
+
+  <h2><span class="num">3</span>为什么这一刀比 end_phase 好</h2>
+
+  <table>
+    <thead><tr><th style="width:18%">维度</th><th style="width:41%"><code>end_phase</code> 不一致</th><th>测试恢复（本课）</th></tr></thead>
+    <tbody>
+      <tr><td>体量</td><td>1–3 小时，但改动可能只有几行</td><td>1–2 小时，产出 6 个用例</td></tr>
+      <tr><td>故事线</td><td>发现 → 判断 → 改，偏单薄</td><td>发现 → 定位 → 判断 → 方案 → 验证，<strong>五环齐全</strong></td></tr>
+      <tr><td>可量化</td><td>难量化</td><td><strong>「通过数从 16 提到 22」</strong>——面试里最硬的那种话</td></tr>
+      <tr><td>展示的能力</td><td>读代码细心</td><td>单测设计 + Mockito 注入 + 技术债识别 + 范围控制</td></tr>
+      <tr><td>是否真贡献</td><td>是</td><td><strong>作者在注释里明确写了「留作下一步独立 PR 修复」——你做的正是他邀请的事</strong></td></tr>
+    </tbody>
+  </table>
+
+  <p><code>end_phase</code> 降级为第二刀。做完这一刀你自然会更懂这个模块，那时候再顺手处理它。</p>
+
+  <h2><span class="num">4</span>根因：本课的技术含量全在这里</h2>
+
+  <p>旧测试为什么 NPE？看两组事实的对比，答案就出来了。</p>
+
+  <table>
+    <thead><tr><th style="width:30%">&nbsp;</th><th style="width:35%">坏掉的旧测试</th><th>正在跑的参考测试</th></tr></thead>
+    <tbody>
+      <tr><td>类</td><td><code>VoiceInterviewServiceTest</code></td><td><code>VoiceInterviewSummaryPersistenceTest</code></td></tr>
+      <tr><td>构造方式</td><td><code>@InjectMocks</code></td><td><strong>手动 <code>new VoiceInterviewService(...)</code></strong></td></tr>
+      <tr><td>声明的 mock 数</td><td><strong>4 个</strong></td><td><strong>7 个（全给）</strong></td></tr>
+      <tr><td>服务的构造参数数</td><td colspan="2" style="text-align:center"><strong>7 个</strong></td></tr>
+      <tr><td>结果</td><td>3 个参数无人提供</td><td>全部满足</td></tr>
+    </tbody>
+  </table>
+
+  <p><code>VoiceInterviewService</code> 用 <code>@RequiredArgsConstructor</code>，7 个 <code>final</code> 依赖全部走构造函数注入：</p>
+
+  <pre><code>sessionRepository · messageRepository · evaluationRepository
+redissonClient · properties · voiceEvaluateStreamProducer · llmProviderRegistry</code></pre>
+
+  <div class="callout callout--risk">
+    <span class="callout-label">最关键的一句（背下来）</span>
+    <p style="margin-bottom:0"><code>@InjectMocks</code> 解析不出构造参数时，<strong>静默传 <code>null</code></strong>，不会编译报错、不会启动报错——要等到被测方法真的用到那个依赖，才在运行时炸成 NPE。<br>
+    <strong>手动 <code>new</code> 把这个问题从运行时挪到了编译期。</strong>参数少了，编译不过。</p>
+  </div>
+
+  <p>顺便，这里还有一处发现值得你记下来：<strong>旧测试的 <code>@Disabled</code> 注释里只说了缺 <code>LlmProviderRegistry</code>，实际缺 3 个依赖。</strong>注释也是过时的。这种「文档与事实不一致」的小观察，在面试里比技术细节更能证明你真读过代码。</p>
+
+  <h2><span class="num">5</span>工作模板：照抄这份骨架</h2>
+
+  <p>风格不是我自己编的，是从<strong>正在跑的那个测试类</strong>提取的，同时符合 <code>AGENTS.md</code> 的要求：JUnit 5 + Mockito + AssertJ、中文 <code>@DisplayName</code>、2 空格缩进。</p>
+
+  <pre><code>package interview.guide.modules.voiceinterview.service;
+
+import interview.guide.common.ai.LlmProviderRegistry;
+import interview.guide.common.exception.BusinessException;
+import interview.guide.modules.voiceinterview.config.VoiceInterviewProperties;
+import interview.guide.modules.voiceinterview.listener.VoiceEvaluateStreamProducer;
+import interview.guide.modules.voiceinterview.model.VoiceInterviewSessionEntity;
+import interview.guide.modules.voiceinterview.model.VoiceInterviewSessionStatus;
+import interview.guide.modules.voiceinterview.repository.VoiceInterviewEvaluationRepository;
+import interview.guide.modules.voiceinterview.repository.VoiceInterviewMessageRepository;
+import interview.guide.modules.voiceinterview.repository.VoiceInterviewSessionRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.redisson.api.RBucket;
+import org.redisson.api.RedissonClient;
+
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+@ExtendWith(MockitoExtension.class)
+@DisplayName("VoiceInterviewService 暂停/恢复")
+class VoiceInterviewServicePauseTest {
+
+  @Mock private VoiceInterviewSessionRepository sessionRepository;
+  @Mock private VoiceInterviewMessageRepository messageRepository;
+  @Mock private VoiceInterviewEvaluationRepository evaluationRepository;
+  @Mock private RedissonClient redissonClient;
+  @Mock private VoiceInterviewProperties properties;
+  @Mock private VoiceEvaluateStreamProducer evaluateStreamProducer;
+  @Mock private LlmProviderRegistry llmProviderRegistry;
+  @Mock private RBucket&lt;VoiceInterviewSessionEntity&gt; bucket;
+
+  private VoiceInterviewService service;
+
+  @BeforeEach
+  void setUp() {
+    // 手动构造：参数不齐会编译失败，不会像 @InjectMocks 那样静默传 null
+    service = new VoiceInterviewService(
+        sessionRepository,
+        messageRepository,
+        evaluationRepository,
+        redissonClient,
+        properties,
+        evaluateStreamProducer,
+        llmProviderRegistry
+    );
+  }
+
+  @Test
+  @DisplayName("暂停进行中的会话：状态转 PAUSED、写入暂停时间、失效缓存")
+  void pauseInProgressSession() {
+    VoiceInterviewSessionEntity session = VoiceInterviewSessionEntity.builder()
+        .id(42L)
+        .status(VoiceInterviewSessionStatus.IN_PROGRESS)
+        .build();
+    when(sessionRepository.findById(42L)).thenReturn(Optional.of(session));
+    when(redissonClient.&lt;VoiceInterviewSessionEntity&gt;getBucket(anyString())).thenReturn(bucket);
+
+    service.pauseSession("42", "用户超时");
+
+    assertThat(session.getStatus()).isEqualTo(VoiceInterviewSessionStatus.PAUSED);
+    assertThat(session.getPausedAt()).isNotNull();
+    verify(sessionRepository).save(session);
+    verify(bucket).delete();
+  }
+
+  // 剩下 5 个用例按第 6 节的清单自己写
+}</code></pre>
+
+  <p>第一个用例我写完整了，剩下的留给你——<strong>照抄这个形状就行，只是前置条件、断言和 stub 不同。</strong>写测试这件事本身就是重复劳动，跑通第一个之后第二个会快很多。</p>
+
+  <h2><span class="num">6</span>六个用例清单</h2>
+
+  <p>被测的两个方法分支完全对称，所以用例也是对称的。这是你的测试设计，也是面试里要讲的「我怎么想覆盖面」。</p>
+
+  <table>
+    <thead><tr><th style="width:6%">#</th><th style="width:26%">用例</th><th style="width:30%">前置</th><th>期望</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>暂停进行中的会话</td><td><code>status=IN_PROGRESS</code>，<code>findById</code> 命中</td><td><code>status→PAUSED</code>；<code>pausedAt</code> 非空；<code>verify save</code>；<code>verify bucket.delete()</code></td></tr>
+      <tr><td>2</td><td>暂停不存在的会话</td><td><code>findById</code> 返回 <code>Optional.empty()</code></td><td>抛 <code>BusinessException</code>，错误码 <code>NOT_FOUND</code></td></tr>
+      <tr><td>3</td><td>暂停非进行中的会话</td><td><code>status=PAUSED</code></td><td>抛 <code>BusinessException</code>，错误码 <code>BAD_REQUEST</code></td></tr>
+      <tr><td>4</td><td>恢复已暂停的会话</td><td><code>status=PAUSED</code>，<strong>且设了 <code>currentPhase</code></strong></td><td><code>status→IN_PROGRESS</code>；<code>resumedAt</code> 非空；<code>verify save</code>；<code>verify bucket.set(...)</code></td></tr>
+      <tr><td>5</td><td>恢复不存在的会话</td><td><code>findById</code> 返回 <code>Optional.empty()</code></td><td>抛 <code>BusinessException</code>，错误码 <code>NOT_FOUND</code></td></tr>
+      <tr><td>6</td><td>恢复非暂停状态的会话</td><td><code>status=IN_PROGRESS</code></td><td>抛 <code>BusinessException</code>，错误码 <code>BAD_REQUEST</code></td></tr>
+    </tbody>
+  </table>
+
+  <p>异常断言用 AssertJ 的 <code>assertThatThrownBy(...).isInstanceOf(BusinessException.class)</code>。状态枚举只有四个值：<code>IN_PROGRESS</code> / <code>PAUSED</code> / <code>COMPLETED</code> / <code>FAILED</code>。</p>
+
+  <h2><span class="num">7</span>三个一定会咬你的坑</h2>
+
+  <h3>坑一：Mockito 的严格模式会拒绝「多余的 stub」</h3>
+  <p><code>MockitoExtension</code> 默认 <code>STRICT_STUBS</code>：<strong>你 stub 了但该用例没用到，测试直接失败</strong>（<code>UnnecessaryStubbingException</code>）。</p>
+  <p>坏掉的旧测试是这么绕过去的：类上加 <code>@MockitoSettings(strictness = LENIENT)</code>，还在 <code>setUp</code> 里用 <code>lenient().when(...)</code> 全局 stub 了 Redis。</p>
+
+  <div class="contrast">
+    <div class="no">
+      <h4>✕ 别学旧测试</h4>
+      <p style="font-size:.9rem">把严格模式关掉，让报错消失。</p>
+      <p style="font-size:.86rem;margin-bottom:0">问题：你同时关掉了 Mockito 最有价值的一条保护——它本来能帮你抓出无用的 stub，也就是「你以为这段代码在用，其实没走到」。</p>
+    </div>
+    <div class="yes">
+      <h4>✓ 正确做法</h4>
+      <p style="font-size:.9rem">不在 <code>setUp</code> 里全局 stub；每个用例只 stub 自己那条路径用到的依赖。</p>
+      <p style="font-size:.86rem;margin-bottom:0">比如用例 2、3、5、6 会在走到缓存逻辑之前就抛异常，所以这几个用例<strong>不要</strong> stub <code>getBucket</code>。严格模式这时反过来帮你验证「这条路径真的没碰缓存」。</p>
+    </div>
+  </div>
+
+  <h3>坑二：<code>currentPhase</code> 没设值会 NPE</h3>
+  <p>用例 4 必须给实体设 <code>currentPhase</code>。原因：<code>resumeSession</code> 最后会调 <code>buildSessionResponse(session)</code>，里面有一行 <code>session.getCurrentPhase().name()</code>；而实体中 <code>currentPhase</code> <strong>没有 <code>@Builder.Default</code></strong>，不设就是 <code>null</code>，直接 NPE。</p>
+  <p>取值：<code>VoiceInterviewSessionEntity.InterviewPhase.INTRO</code>（枚举是实体里的嵌套类，四个阶段 <code>INTRO</code> / <code>TECH</code> / <code>PROJECT</code> / <code>HR</code>，外加 <code>COMPLETED</code>）。</p>
+  <div class="callout callout--good">
+    <span class="callout-label">这个坑本身是收获</span>
+    <p style="margin-bottom:0"><strong>写测试时撞到的 NPE，往往就是生产代码的脆弱点。</strong>这里它说明 <code>buildSessionResponse</code> 隐含假设 <code>currentPhase</code> 非空，但没有校验。
+    面试里可以主动说：「我补测试时发现这个隐式契约，加了断言把它固定下来。」——比单纯「我写了 6 个测试」高一个层次。</p>
+  </div>
+
+  <h3>坑三：三个依赖必须传，但整条路径用不到</h3>
+  <p><code>evaluationRepository</code>、<code>evaluateStreamProducer</code>、<code>llmProviderRegistry</code> 在 pause / resume 路径上<strong>一次都没被调用</strong>，但构造函数强制要求。</p>
+  <p>这是可以主动讲出来的重构观察：<strong>一个 Service 的依赖面越宽，说明它承担的职责越多。</strong>pause / resume 这种纯状态流转的逻辑，按理不该知道 LLM 和评估的存在。面试官若问「你会怎么改」，答案就是按职责拆分，或者把状态流转抽到独立的 SessionStateService。</p>
+
+  <h2><span class="num">8</span>执行步骤</h2>
+
+  <ol class="steps">
+    <li>打开 <code>VoiceInterviewServicePauseTest.java</code>，把它整个替换成第 5 节的骨架 + 第 1 个用例（别急着一口气写完 6 个）。</li>
+    <li>跑：<br><code>./gradlew :app:test --no-daemon --tests "*VoiceInterviewServicePauseTest*"</code><br>
+    <span style="color:var(--ink-faint);font-size:.88rem">注意：类上还有 <code>@Disabled</code>，不删的话一个都不会跑。先删掉。</span></li>
+    <li>第 1 个用例绿了，再按清单逐个加。<strong>每加一个跑一次</strong>——一次加 5 个然后一起 debug 是初学者最容易浪费两小时的方式。</li>
+    <li>6 个全绿后跑全量，看通过数和跳过数的变化：<br><code>./gradlew :app:test --no-daemon</code></li>
+    <li>写下你的量化结果（通过数 16 → ?，跳过数 44 → ?）。这就是你的弹药。</li>
+  </ol>
+
+  <h4>想自己数通过数，用这个</h4>
+  <pre><code>python3 -c "
+import glob, xml.etree.ElementTree as ET
+t=s=f=0
+for p in glob.glob('app/build/test-results/test/*.xml'):
+    r = ET.parse(p).getroot()
+    t += int(r.get('tests',0)); s += int(r.get('skipped',0))
+    f += int(r.get('failures',0)) + int(r.get('errors',0))
+print(f'共 {t} 个 | 通过 {t-s-f} | 跳过 {s} | 失败 {f}')"</code></pre>
+
+  <h2><span class="num">9</span>你的面试故事线（五环填空）</h2>
+
+  <p>改完之后，把这段说顺。<strong>面试官要的不是「我修了测试」，是这五环之间的因果推理。</strong></p>
+
+  <div class="script">
+    <span class="script-label">逐字稿骨架 · 做完任务后填实</span>
+    <div class="script-body">
+      <p><strong>发现问题：</strong>「我在跑这个项目的测试套件时注意到，60 个测试里有 44 个是跳过的——覆盖率虚高。而且构建照样是绿的，因为 <code>@Disabled</code> 不产生失败，所以这件事很容易被一直忽略。」</p>
+      <p><strong>定位：</strong>「我追进去看注释，原因是语音面试模块经历了几次重构，改了服务构造函数的签名和依赖注入，但测试的 mock 没跟着改，于是这些类被直接 <code>@Disabled</code> 掉而不是修。」</p>
+      <p><strong>判断：</strong>「具体到 <code>VoiceInterviewServiceTest</code>，它用的是 <code>@InjectMocks</code>，但只声明了 4 个 mock，而服务的构造函数要 7 个参数。Mockito 对解析不出的参数静默传 <code>null</code>，所以不报错，运行时才 NPE。有意思的是注释里只提到缺一个依赖，实际缺三个。」</p>
+      <p><strong>方案：</strong>「我改成手动 <code>new</code>，让编译器替我检查参数完整性；然后不用 LENIENT，按每条路径精确 stub——严格模式反过来帮我确认某些分支确实没碰缓存。我先把 <code>pauseSession</code> / <code>resumeSession</code> 这一类做完，6 个用例覆盖状态流转的两个方向加四个异常分支。」</p>
+      <p style="margin-bottom:0"><strong>验证：</strong>「通过数从 16 提到 〔N〕，跳过从 44 降到 〔M〕。剩下最大的一类是 43 个 <code>@Nested</code>，需要 mock 出 LLM 客户端的链式调用，我评估后觉得应该单独一个 PR，避免和别的改动耦合。」</p>
+      <div class="script-why">
+        <p style="margin-bottom:0"><strong>最后那句「我评估后觉得应该单独一个 PR」不要省。</strong>它展示的是<strong>范围控制</strong>——知道该在哪儿停下，是资深和初级最明显的分界线之一。很多候选人会硬做完然后做砸。</p>
+      </div>
+    </div>
+  </div>
+
+  <h2><span class="num">10</span>自测</h2>
+
+  <div class="recall" data-lesson="0002">
+    <h3>主动回忆自测</h3>
+    <div class="recall-q"
+      data-q="为什么「BUILD SUCCESSFUL」不能证明测试真的验证过了？"
+      data-a="因为被 <code>@Disabled</code> 跳过的测试<strong>不产生失败</strong>，构建照样成功。<br>这个项目里 60 个测试有 44 个是跳过的，所以绿色只意味着「没有失败」，不等于「验证过了」。<strong>能主动指出这个区别本身就是加分项。</strong>"></div>
+    <div class="recall-q"
+      data-q="旧测试为什么 NPE？请说清 @InjectMocks 与手动 new 的区别。"
+      data-a="<code>VoiceInterviewService</code> 用 <code>@RequiredArgsConstructor</code>，构造函数要 <strong>7 个</strong>依赖，而旧测试的 <code>@InjectMocks</code> 只声明了 <strong>4 个</strong> mock。<br>
+      <strong><code>@InjectMocks</code> 对解析不出的构造参数静默传 <code>null</code></strong>——不编译报错、不启动报错，要等被测方法真的用到才运行时 NPE。<br>
+      <strong>手动 <code>new</code> 把这个问题从运行时挪到编译期</strong>：参数少了，编译不过。"></div>
+    <div class="recall-q"
+      data-q="为什么不该用 LENIENT 关掉 Mockito 的严格模式？正确做法是什么？"
+      data-a="关掉严格模式等于放弃 Mockito 最有价值的一条保护：<strong>它本来能抓出「多余的 stub」，也就是你以为代码走到了、其实没走到。</strong><br>
+      正确做法：<strong>不在 <code>@BeforeEach</code> 里全局 stub，每个用例只 stub 自己那条路径真正用到的依赖。</strong>比如会在抛异常前就返回的用例，不要 stub <code>getBucket</code>。"></div>
+    <div class="recall-q"
+      data-q="写 pause/resume 的测试时，为什么实体必须设 currentPhase？这件事本身说明了什么？"
+      data-a="<code>resumeSession</code> 最后会调 <code>buildSessionResponse(session)</code>，里面有一行 <code>session.getCurrentPhase().name()</code>；而实体中 <code>currentPhase</code> 没有 <code>@Builder.Default</code>，不设就是 <code>null</code> → NPE。<br>
+      <strong>说明什么：写测试撞到的 NPE 往往就是生产代码的脆弱点。</strong>这里它暴露了 <code>buildSessionResponse</code> 隐含假设 <code>currentPhase</code> 非空却不校验，是个可以主动提出的发现。"></div>
+    <div class="recall-q"
+      data-q="讲这个改动时，「我评估后觉得应该单独一个 PR」这句话为什么不能省？"
+      data-a="因为它展示的是<strong>范围控制</strong>——知道该在哪儿停下。<br>
+      剩下的 43 个 <code>@Nested</code> 需要 mock LLM 客户端的链式调用，硬做完容易做砸、还会和其他改动耦合。<strong>主动划定本次改动的边界，是资深和初级最明显的分界线之一。</strong>"></div>
+  </div>
+
+  <div class="card">
+    <p class="card-title">推荐主源</p>
+    <p style="margin-bottom:.5rem">① <a href="https://javadoc.io/doc/org.mockito/mockito-core/latest/org/mockito/Mockito.html">Mockito 官方文档 → 第 1 节「Let's verify some behaviour」与 Argument matchers</a><br>
+      ② <a href="https://site.mockito.org/javadoc/current/org/mockito/junit/jupiter/MockitoExtension.html"><code>MockitoExtension</code> Javadoc → 看 <code>strictness</code> 的默认值与各档含义</a></p>
+    <p style="margin-bottom:0;font-size:.9rem;color:var(--ink-soft)">别看中文博客里的 Mockito 教程，多数还在讲 JUnit 4 的 <code>MockitoJUnitRunner</code>，和这个项目用的 JUnit 5 + <code>MockitoExtension</code> 不是一回事。直接读官方文档最快。</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">卡住就发我</span>
+    <p style="margin-bottom:0">预期你会在这两处卡：<strong>① <code>resumeSession</code> 的用例 4 需要额外 stub 什么</strong>（提示：它会调 <code>messageRepository.countBySessionIdAndMessageTypeNot(...)</code>，返回值是 <code>long</code>，没 stub 会返回 0，不报错但要让断言自洽）；
+    <strong>② 严格模式报 <code>UnnecessaryStubbingException</code></strong>。把完整报错贴给我，我们逐条看。</p>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0001-可信框架与60秒陈述.html">← 第 1 课：可信框架与 60 秒陈述</a>
+    <a href="../reference/项目全景卡.html">参考卡：项目全景 →</a>
+  </nav>
+
+  <div class="lesson-foot">
+    第 2 课 · 阶段 0 地基 · 下一课：跑通「简历上传 → 异步分析」全链路<br>
+    课程索引见 <a href="../NOTES.md">NOTES.md</a> · 目标与约束见 <a href="../MISSION.md">MISSION.md</a>
+  </div>
+
+</div>
+<script src="../assets/recall-quiz.js" defer></script>
+</body>
+</html>

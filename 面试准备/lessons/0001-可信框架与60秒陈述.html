@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 1 课 · 可信框架与 60 秒陈述</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="lesson-head">
+    <div class="course-tag">
+      <span>InterviewGuide 面试准备</span>
+      <span class="sep">/</span>
+      <span>阶段 0 · 地基</span>
+      <span class="sep">/</span>
+      <span>第 1 课</span>
+    </div>
+    <h1>你的可信框架，与 60 秒陈述</h1>
+    <p class="subtitle">整场项目轮面试，胜负在开口的前 60 秒就定了一半。这一课先把地基打对。</p>
+  </header>
+
+  <p class="lede">按理说第一课应该讲架构。但不讲。原因很简单——<strong>你要讲的故事现在还是空的。</strong></p>
+
+  <p>你选的框架是「如实说明是开源项目 + 我的二次开发」。这个框架本身是对的，也是最有含金量的。但它有一个前提：<strong>你得真的改过。</strong>而你现在没有（我查过了：本地仓库零改动，只跑过一次测试）。</p>
+
+  <p>所以这一课分两半：先让你看清面试官会怎么拆你，再给你一份「把地基填实」的具体任务。话术我照样给，但会明确标注什么时候才能说。</p>
+
+  <div class="callout callout--risk">
+    <span class="callout-label">这一课最重要的一句话</span>
+    <p>面试里唯一赌不起的东西是<strong>可信度</strong>。知识点答错一个，扣一分；可信度塌一次，这一轮就结束了。<br>
+    所以本课程所有话术的排序原则是：<strong>站得住 &gt; 好听</strong>。宁可天花板低一点，也不给你一句需要运气的话。</p>
+  </div>
+
+  <h2><span class="num">知识 A</span>这个项目到底是什么</h2>
+
+  <p>先建立事实基线。下面这些是<strong>事实</strong>，不是我编的框架——分别来自 <code>README.md</code> 与 <code>.arch-docs/ARCHITECTURE.md</code>。</p>
+
+  <div class="card">
+    <p class="card-title">一句话定位（背下来，这是所有回答的锚）</p>
+    <p style="font-size:1.06rem;margin-bottom:.6rem"><strong>InterviewGuide 是一个自托管的智能面试辅助平台</strong>：求职者上传简历后获得 AI 分析报告，可进行文字或实时语音模拟面试（Skill 驱动出题 + 统一评估 + PDF 报告），并将自己的资料沉淀为知识库，通过 RAG 问答与知识库题库面试持续练习；同时提供面试日程管理（邀请解析 + 日历）与多 LLM Provider 可视化配置。</p>
+    <p style="margin-bottom:0;color:var(--ink-faint);font-size:.86rem">出处：<code>.arch-docs/ARCHITECTURE.md</code> §1。</p>
+  </div>
+
+  <h3>五条业务线</h3>
+  <p>面试官问「介绍一下这个项目」时，如果你只会说“一个 AI 面试平台”然后就没词了——这时需要的就是下面这张清单。记住<strong>五条线</strong>，每条配一句能力描述，你就有了 60 秒的内容量。</p>
+
+  <table>
+    <thead>
+      <tr><th style="width:22%">业务线</th><th>一句话</th><th style="width:24%">最能讲的亮点</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>简历分析</td><td>多格式解析 → 哈希去重 → 异步 AI 分析 → PDF 报告</td><td>Redis Stream 异步 + 失败重试 3 次</td></tr>
+      <tr><td>模拟面试（文字）</td><td>Skill 驱动出题、历史题去重、多轮追问、阶段时长联动</td><td>出题策略外置成 <code>SKILL.md</code></td></tr>
+      <tr><td>语音面试</td><td>WebSocket + 千问3 ASR/TTS/LLM，服务端 VAD、句子级并发 TTS</td><td>技术密度最高，也最容易讲深</td></tr>
+      <tr><td>知识库 + 题库</td><td>文档异步向量化、RAG 问答（SSE 流式）、题库生成与专项面试</td><td>pgvector 检索链路 + 查询改写</td></tr>
+      <tr><td>日程 / 多模型配置</td><td>邀请文本双引擎解析 + 日历；多 Provider 切换与密钥加密落盘</td><td>规则 + AI 兜底的降级设计</td></tr>
+    </tbody>
+  </table>
+
+  <p>服务对象是三类人：<strong>求职者</strong>（练面试）、<strong>HR / 招聘</strong>（批量评估简历）、<strong>培训机构</strong>（题库运营）。分工上它是<strong>单人开源项目</strong>——这点后面会变成你的优势，先记住。</p>
+
+  <h2><span class="num">知识 B</span>面试官会怎么拆你</h2>
+
+  <p>这是本课的核心。项目经历面试不是随机聊天，它是一条<strong>几乎固定的追问路径</strong>。知道路径，你就能预判。</p>
+
+  <p>当你开口说「这是我做的项目」时，面试官心里默认三件事：<em>你写的每一行你都读过</em>、<em>任何一个设计选择你都能解释</em>、<em>你知道它跑起来是什么样</em>。这三条默认，就是你的作业。</p>
+
+  <h3>六步追问路径</h3>
+
+  <ol class="steps">
+    <li>用一句话讲讲这个项目是干什么的<span style="color:var(--ink-faint);font-size:.85rem">（30 秒以内，考察结构感）</span></li>
+    <li class="crux">哪部分是你写的？
+      <span class="crux-note">分水岭一。这题答不好，后面所有技术回答都会被当成背书，权重直接归零。</span>
+    </li>
+    <li>为什么用 A 不用 B？<span style="color:var(--ink-faint);font-size:.85rem">（选型题：pgvector vs Milvus、Redis Stream vs Kafka）</span></li>
+    <li>这块具体怎么实现的？<span style="color:var(--ink-faint);font-size:.85rem">（细节题：某个请求经过哪些类、异步怎么走）</span></li>
+    <li class="crux">出过什么问题？你怎么发现的？
+      <span class="crux-note">分水岭二。唯一无法靠背诵通过的题——没有真实经历就没有答案。答好了，能把前面的可疑一笔勾销。</span>
+    </li>
+    <li>如果流量涨 100 倍，哪里会先崩？<span style="color:var(--ink-faint);font-size:.85rem">（推演题：开放，考判断力，答错不致命）</span></li>
+  </ol>
+
+  <div class="callout callout--good">
+    <span class="callout-label">把这个顺序反过来用</span>
+    <p>既然第 2 问和第 5 问是分水岭，那它们就不该等着被问——<strong>你应该在第 1 问里主动把它们答掉。</strong>
+    开场 60 秒就交代清楚“哪部分是我做的、我发现了什么问题”，面试官接下来只能往你有准备的地方走。<br>
+    <strong>这就是控制话题方向，比答得好重要得多。</strong></p>
+  </div>
+
+  <h2><span class="num">技能</span>三段式可信陈述</h2>
+
+  <p>下面是逐字稿。三段分别对应：<strong>交代来源</strong>、<strong>划定贡献边界</strong>、<strong>设定话题方向</strong>。总共 60 秒左右。</p>
+
+  <div class="callout callout--note">
+    <span class="callout-label">使用前必读</span>
+    <p style="margin-bottom:0">第二段依赖你的真实改动。<strong>在你完成第 5 节的任务之前，只能讲第一段和第三段，第二段留空</strong>——
+    留空是安全的（“我主要是深入学习，改动还在做”），编造是不安全的。不要倒过来。</p>
+  </div>
+
+  <h3>第一段 · 主动交代来源（约 12 秒）</h3>
+
+  <div class="script">
+    <span class="script-label">逐字稿</span>
+    <div class="script-body">
+      <p>“InterviewGuide 是我用来吃透 Spring AI 工程落地的一个开源项目，作者是 JavaGuide 的 Snailclimb，AGPL-3.0 协议。它不是我从零写的——我在上游基础上做了深度拆解和二次开发，重点放在 RAG 检索链路和 Redis Stream 这套异步机制上。”</p>
+      <div class="script-why">
+        <p><strong>为什么这么说：</strong>主动交代把“可能被揭穿”变成“主动披露”，这是诚实信号，不是减分项。更关键的是——<strong>“二次开发”比“从零做”更难糊弄</strong>。从零做的项目可以用模板话术混过去，二次开发必须能指出具体文件和具体判断，面试官清楚这一点。</p>
+        <p style="margin-bottom:0"><strong>顺便把话头递出去了：</strong>你点了“RAG 检索链路”和“Redis Stream 异步”两个方向。这两个正好是本项目最有技术含量的部分，接下来面试官大概率顺着问，而那正是你后面几课要练的主战场。</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>第二段 · 划定贡献边界（约 30 秒，本课的重点任务）</h3>
+
+  <p>这一段的结构是<strong>五个环节，缺一不可</strong>：发现问题 → 定位 → 判断 → 方案取舍 → 验证。少任何一个，听起来都像“我随便改了改”。</p>
+
+  <div class="script">
+    <span class="script-label">逐字稿（模板 · 第 5 节做完任务后填实）</span>
+    <div class="script-body">
+      <p>“我的改动集中在一处。我读 WebSocket 控制消息定义的时候发现，注释里列了 <code>end_phase</code> 这个动作，但 handler 的 switch 只实现了 <code>submit</code>、<code>end_interview</code>、<code>start_phase</code> 三个分支。我判断这不是单纯的注释漂移，而是协议设计留了扩展位但实现漏了——理由是〔你读代码后的判断〕。所以我选了〔补实现 / 修注释〕这个方向，改了 N 个文件，用〔具体测试〕验证。”</p>
+      <div class="script-why">
+        <p><strong>为什么这个结构有效：</strong>它展示的不是“我改了一行代码”，而是<strong>一套完整的工程动作</strong>。面试官听完会自动给你贴上“这人真的读过代码、而且会做判断”的标签——这个标签值钱的地方在于，它会让你后面所有回答的可信度都上一个档。</p>
+        <p style="margin-bottom:0"><strong>为什么必须包含“判断”这一环：</strong>“注释和实现不一致”本身是个廉价发现。值钱的是<strong>你如何决定哪个是对的</strong>。补实现还是修注释，取决于这个动作在协议里有没有真实语义、有没有前端在调用、有没有测试覆盖。你的判断依据是什么，这一段的技术含量就在哪。</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>第三段 · 设定话题方向（约 20 秒）</h3>
+
+  <div class="script">
+    <span class="script-label">逐字稿</span>
+    <div class="script-body">
+      <p>“这个项目对我最大的价值，是它逼我把「RAG 答不准」这个模糊的问题拆成了可验证的几段：查询改写、分块粒度、相似度阈值、TopK。我一开始以为是 embedding 模型不行，后来发现阈值和 TopK 的组合影响更大——这个结论我是用〔具体方式〕验证出来的。”</p>
+      <div class="script-why">
+        <p><strong>为什么这句话是高价值动作：</strong>它做了一个所有面试老手都在做、但新手从不做的事——<strong>主动设定接下来的题目</strong>。你在这里点了“阈值和 TopK”，面试官的下一步追问就大概率落到这儿，而那正是你准备好的地方。</p>
+        <p style="margin-bottom:0"><strong>为什么用“把模糊问题拆成可验证的几段”这个说法：</strong>这句话本身就在展示工程能力。AI 应用岗最稀缺的能力不是调参，是<strong>把一个说不清效果的目标变成可测量的指标</strong>。你把它说出来，等于免费给自己加了一分。</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>不要这样讲</h3>
+
+  <div class="contrast">
+    <div class="no">
+      <h4>✕ 会出事</h4>
+      <p style="font-size:.9rem">“这是我独立开发的一个 AI 面试平台，用 Spring Boot 和 React 写的，大概几万行代码。”</p>
+      <p style="font-size:.86rem;margin-bottom:0">①「独立开发」与事实冲突，等于赌面试官没见过这个项目；② 没有任何具体信息，面试官下一步只能问“哪部分是你写的”——直击你最弱的地方。</p>
+    </div>
+    <div class="yes">
+      <h4>✓ 站得住</h4>
+      <p style="font-size:.9rem">“这是我在 JavaGuide 作者的开源项目上做的深度拆解和二次开发，重点在 RAG 检索和 Redis Stream 异步。”</p>
+      <p style="font-size:.86rem;margin-bottom:0">① 来源清楚，不存在被揭穿的可能；② 立刻给出具体方向，把面试官的注意力引到技术上，而不是“你做了多少”上。</p>
+    </div>
+  </div>
+
+  <h2><span class="num">行动</span>先攒弹药</h2>
+
+  <p>这一课的作业不是背话术，是<strong>做出一个可以讲的改动</strong>。</p>
+
+  <div class="callout callout--good">
+    <span class="callout-label">第一刀已挪到下一课</span>
+    <p style="margin-bottom:0">我后来重新扫了一遍测试套件，发现了一个比 <code>end_phase</code> 好得多的目标：<strong>语音面试模块 60 个测试里有 44 个是被 <code>@Disabled</code> 跳过的空壳</strong>（占 73%），而构建照样是绿的。作者在注释里明确写了「留作下一步独立 PR 修复」——你做的正是他邀请的事。故事线更完整、结果可量化。<br>
+    <strong>去 <a href="0002-第一刀-让被禁用的测试活过来.html">第 2 课</a> 做那一刀。</strong>下面保留 <code>end_phase</code> 作为第二刀备选。</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">第二刀备选 · end_phase 注释与实现不一致</span>
+    <p><strong>已核实的事实（你可以直接去看）：</strong></p>
+    <ul style="margin-bottom:.7rem">
+      <li><code>app/src/main/java/interview/guide/modules/voiceinterview/dto/WebSocketControlMessage.java</code> 第 18 行<br>
+        <code>private String action; // "start_phase", "end_phase", "end_interview", "submit"</code></li>
+      <li><code>.../voiceinterview/handler/VoiceInterviewWebSocketHandler.java</code> 第 880 行附近<br>
+        switch 只有 <code>submit</code> / <code>end_interview</code> / <code>start_phase</code> 三个 case</li>
+    </ul>
+    <p style="margin-bottom:0"><strong>为什么适合当第一刀：</strong>体量小（1–3 小时）、零风险、<strong>不需要改架构</strong>，但足够撑起完整的「发现 → 定位 → 判断 → 方案 → 验证」故事线。而且语音模块是这项目技术密度最高的地方，从这个入口进去，你会顺带读懂 WebSocket 协议层。</p>
+  </div>
+
+  <h4>执行步骤</h4>
+  <ol>
+    <li>先跑一遍基线测试，确认当前是绿的：<br>
+      <code>./gradlew :app:test --no-daemon --tests "*VoiceInterview*"</code></li>
+    <li>通读 <code>WebSocketControlMessage.java</code> 与 handler 里那三个 case 的实现，回答一个问题：<strong><code>start_phase</code> 做了什么？</strong>这是判断 <code>end_phase</code> 有没有真实语义的唯一依据。</li>
+    <li>全局搜 <code>start_phase</code>：前端有没有在发这个动作？如果前端在发 <code>start_phase</code> 而没人发 <code>end_phase</code>，说明它是设计了一半的功能——结论就偏向“补实现”或“删掉这个注释项”。</li>
+    <li>写下你的判断和依据。<strong>这一步不能跳，面试话术的技术含量全在这里。</strong></li>
+    <li>动手改，补一个测试，再跑一次测试确认还是绿的。</li>
+  </ol>
+
+  <h4>后续候选（做完前两刀再考虑）</h4>
+  <table>
+    <thead><tr><th style="width:24%">方向</th><th>具体做什么</th><th style="width:26%">面试价值</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Prompt 调优 + 对比</td>
+        <td><code>app/src/main/resources/prompts/</code> 下有 51 个 <code>.st</code> 模板。选一个改写类 prompt，构造 5–10 条测试输入，对比改动前后的输出</td>
+        <td><strong>AI Agent 岗最高加分项</strong>：能讲“我如何量化 prompt 改动的效果”，直接展示评测意识</td>
+      </tr>
+      <tr>
+        <td>可观测性补齐</td>
+        <td>给某条异步链路（简历分析 / 文档向量化）补 Micrometer 指标或结构化日志</td>
+        <td>适合被问“线上怎么排障”时讲，体现生产意识</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--note">
+    <span class="callout-label">改完之后记得</span>
+    <p style="margin-bottom:0">把改动提交到你<strong>自己的 fork</strong> 上（不要直接往上游推）。这样你有 commit 记录——面试官万一问“能看看你的改动吗”，你点开就有。这是免费的信用背书。</p>
+  </div>
+
+  <h2><span class="num">自测</span>合上页面，先自己说一遍</h2>
+
+  <div class="recall" data-lesson="0001">
+    <h3>主动回忆自测</h3>
+    <div class="recall-q"
+      data-q="用一句话讲清 InterviewGuide 是干什么的，以及它服务哪三类人。"
+      data-a="自托管的智能面试辅助平台：简历 AI 分析、文字/语音模拟面试（Skill 出题 + 统一评估 + PDF 报告）、知识库 RAG 问答与题库面试、面试日程管理、多 LLM Provider 配置。<br>服务三类人：<strong>求职者</strong>（练面试）、<strong>HR / 招聘</strong>（批量评简历）、<strong>培训机构</strong>（题库运营）。"></div>
+    <div class="recall-q"
+      data-q="面试官问「这个项目是你一个人做的吗」，你的第一句话是什么？为什么这样说？"
+      data-a="第一句是<strong>主动交代来源</strong>：这是 JavaGuide 作者的开源项目，我在上游基础上做了深度拆解和二次开发。<br>原因有三：① 主动披露把「可能被揭穿」转成诚实信号；② <strong>「二次开发」比「从零做」更难糊弄</strong>，面试官知道这必须能指出具体文件和判断，可信度反而更高；③ 不给面试官任何「他是不是在吹」的怀疑空间。"></div>
+    <div class="recall-q"
+      data-q="六步追问路径里，哪两步是分水岭？分别考什么？"
+      data-a="<strong>第 2 问「哪部分是你写的」</strong>——答不好，后面所有技术回答都会被降权成背书；<br><strong>第 5 问「出过什么问题、你怎么发现的」</strong>——唯一无法靠背诵通过的题，没有真实经历就没有答案，但答好了能一笔勾销前面的可疑。<br>策略：<strong>不要等被问，在第 1 问里就主动把这两步答掉</strong>，从而控制话题方向。"></div>
+    <div class="recall-q"
+      data-q="「我做的项目」这句话，面试官听完会默认哪三件事？"
+      data-a="① 你写的每一行你都读过；② 任何一个设计选择你都能解释；③ 你知道它跑起来是什么样。<br>这三条默认<strong>就是你的作业清单</strong>——它们不是恶意揣测，而是行业默认预期，所以不能用「我没做过所以不知道」来回答。"></div>
+    <div class="recall-q"
+      data-q="讲一个自己的改动时，必须包含哪五个环节？缺了哪个最致命？"
+      data-a="<strong>发现问题 → 定位 → 判断 → 方案取舍 → 验证</strong>。<br>缺<strong>「判断」</strong>最致命：只讲「我发现注释和实现不一致，改了一下」，听起来像廉价的一行修改。值钱的是<strong>你如何决定哪个是对的</strong>——依据是协议里有没有真实语义、前端有没有在调用、测试有没有覆盖。这一段的技术含量全在这里。"></div>
+  </div>
+
+  <div class="card">
+    <p class="card-title">推荐主源（5 分钟，先读这个）</p>
+    <p style="margin-bottom:.5rem"><a href="../../README.md">README.md → 「技术选型常见问题解答」三条</a></p>
+    <p style="margin-bottom:0;font-size:.9rem;color:var(--ink-soft)">作者亲口回答了三个「为什么」：为什么用 pgvector 而不是专用向量库、为什么用 Redis Stream 而不是 Kafka、为什么用 Gradle。理由都是同一句——<em>「不想引入太多组件」</em>。<br>
+    <strong>这三条你要比作者记得更牢</strong>，因为它们是面试官最可能问的三个选型问题，第 5 课会专门拆解它们的完整话术。现在只需要读一遍，有个印象。</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">随时打断我</span>
+    <p style="margin-bottom:0">这份材料里任何一处——看不明白的术语、觉得不成立的判断、想换的讲法——直接问我。我是你的老师，不是发资料的。特别是<strong>第 5 节的任务做到一半卡住时</strong>，把报错或疑惑发我，我们一起过。</p>
+  </div>
+
+  <nav class="lesson-nav">
+    <span>← 本课是起点</span>
+    <span><a href="0002-第一刀-让被禁用的测试活过来.html">第 2 课：第一刀 →</a> · <a href="../reference/项目全景卡.html">参考卡：项目全景</a></span>
+  </nav>
+
+  <div class="lesson-foot">
+    第 1 课 · 阶段 0 地基 · 下一课：<a href="0002-第一刀-让被禁用的测试活过来.html">第一刀——让被禁用的测试活过来</a><br>
+    课程索引见 <a href="../NOTES.md">NOTES.md</a> · 目标与约束见 <a href="../MISSION.md">MISSION.md</a>
+  </div>
+
+</div>
+<script src="../assets/recall-quiz.js" defer></script>
+</body>
+</html>

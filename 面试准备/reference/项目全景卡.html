@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>参考卡 · InterviewGuide 项目全景</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  /* 参考卡专用：一页纸、密集、可打印 */
+  body { padding: 2.6rem 1.5rem 4rem; font-size: 15px; }
+  .wrap { max-width: 54rem; }
+  .ref-head { border-bottom: 2px solid var(--ink); padding-bottom: .8rem; margin-bottom: 1.8rem; }
+  .ref-head h1 { font-size: 1.6rem; margin: .5rem 0 .2rem; }
+  .ref-head p { margin: 0; color: var(--ink-faint); font-family: var(--sans); font-size: .82rem; }
+  h2 { margin-top: 2.1rem; padding-top: 1rem; font-size: 1.14rem; margin-bottom: .7rem; }
+  h2 .num { display: inline; margin: 0 .5rem 0 0; font-size: .72rem; }
+  table { font-size: .8rem; margin-bottom: 1.1rem; }
+  th { padding: .35rem .5rem .35rem 0; }
+  td { padding: .38rem .5rem .38rem 0; }
+  pre { font-size: .74rem; padding: .6rem .8rem; margin-bottom: 1rem; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; }
+  @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+  .mini { font-size: .84rem; color: var(--ink-soft); margin: 0 0 .9rem; }
+  .kv { font-family: var(--sans); font-size: .8rem; }
+  .kv strong { display: inline-block; min-width: 5.4rem; color: var(--ink-faint); font-weight: 600; }
+  footer.ret { margin-top: 2.6rem; padding-top: 1rem; border-top: 2px solid var(--ink);
+                font-family: var(--sans); font-size: .78rem; color: var(--ink-faint); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="ref-head">
+    <div class="course-tag">
+      <span>InterviewGuide 面试准备</span><span class="sep">/</span><span>参考卡 · 01</span>
+    </div>
+    <h1>项目全景</h1>
+    <p>面试前 10 分钟扫一遍这一页 · 配套 <a href="../lessons/0001-可信框架与60秒陈述.html">第 1 课</a></p>
+  </header>
+
+  <h2><span class="num">A</span>一句话定位</h2>
+  <p class="mini" style="font-size:.94rem">一个<strong>自托管</strong>的智能面试辅助平台：简历 AI 分析 · 文字/语音模拟面试 · 知识库 RAG 问答与题库面试 · 面试日程管理 · 多 LLM Provider 配置。<br>
+  服务<strong>求职者</strong>（练面试）、<strong>HR / 招聘</strong>（批量评简历）、<strong>培训机构</strong>（题库运营）。</p>
+
+  <div class="grid2">
+    <div>
+      <h2><span class="num">B</span>规模与身份</h2>
+      <p class="kv"><strong>源码规模</strong>约 4.3 万行主源码<br>
+        <span style="margin-left:5.4rem">后端 25,235 行 + 前端 17,990 行</span><br>
+        <span style="margin-left:5.4rem">含后端测试 7,307 行，共约 5.05 万行</span></p>
+      <p class="kv"><strong>模块数</strong>9 个（6 业务 + common + infrastructure + frontend）</p>
+      <p class="kv"><strong>上游</strong><code>Snailclimb/interview-guide</code>（JavaGuide 作者）</p>
+      <p class="kv"><strong>协议</strong>AGPL-3.0（网络提供服务须公开修改后源码）</p>
+      <p class="kv"><strong>形态</strong>单人开源项目</p>
+    </div>
+    <div>
+      <h2><span class="num">C</span>技术栈速查</h2>
+      <p class="kv"><strong>后端</strong>Java 25 · Spring Boot 4.1.0 · Spring AI 2.0.0</p>
+      <p class="kv"><strong>AI 扩展</strong>Spring AI Agent Utils 0.10.0</p>
+      <p class="kv"><strong>语音</strong>DashScope SDK 2.22.7（千问3 ASR/TTS）</p>
+      <p class="kv"><strong>存储</strong>PostgreSQL 16 + pgvector（1024 维 · COSINE · HNSW）</p>
+      <p class="kv"><strong>缓存队列</strong>Redis 6+ / Redisson 4.0.0（Stream）</p>
+      <p class="kv"><strong>对象存储</strong>AWS S3 SDK（本地 RustFS / 部署 MinIO）</p>
+      <p class="kv"><strong>解析 / 导出</strong>Apache Tika 2.9.2 · iText 8.0.5</p>
+      <p class="kv"><strong>schema</strong>Flyway 迁移 + <code>ddl-auto: validate</code></p>
+      <p class="kv"><strong>前端</strong>React 18.3 · TS 5.6 · Vite 5.4 · Tailwind 4</p>
+    </div>
+  </div>
+
+  <h2><span class="num">D</span>三层切法（这是被问架构时最该先说的）</h2>
+  <pre><code>frontend/src  ──REST /api/** · SSE──▶  modules/*  Controller
+              ◀──WebSocket 音频/字幕──▶  （WS 挂 /ws/ 下，不带 /api 前缀）
+                                            │
+                        ┌───────────────────┴───────────────────┐
+                        ▼                                       ▼
+              common/  横切能力                      infrastructure/  技术基座
+              限流 · LLM 接入 · 结构化输出            文件/S3 · Tika 解析 · 文本清洗
+              Prompt 安全 · 统一异常/响应              Redis 缓存 · iText PDF · MapStruct
+              Redis Stream 异步模板
+              统一面试评估引擎
+                        │                                       │
+                        └───────────┬───────────────────────────┘
+                                    ▼
+        PostgreSQL+pgvector   ·   Redis+Redisson   ·   RustFS/S3   ·   外部 LLM Provider</code></pre>
+
+  <p style="font-family:var(--sans);font-size:.82rem"><strong>四条分层铁律</strong>（来自 <code>AGENTS.md</code>，被追问“你们代码规范”时直接背这四条）：</p>
+  <ol style="font-size:.84rem">
+    <li>Controller 只做路由、校验、委托；编排在 Service；<code>@Transactional</code> 只在 Service 且范围最小。</li>
+    <li>基础设施能力必须落在 <code>common/</code> 或 <code>infrastructure/</code>，不散落到业务 Service。</li>
+    <li>对外统一返回 <code>Result&lt;T&gt;</code>，<strong>禁止直接返回 Entity</strong>。</li>
+    <li><strong>LLM / S3 / 外部 HTTP 调用不得放在数据库事务内。</strong>（第 4 条最常被追问）</li>
+  </ol>
+
+  <h2><span class="num">E</span>九个模块</h2>
+  <table>
+    <thead><tr><th style="width:16%">模块</th><th style="width:46%">一句话职责</th><th style="width:16%">规模</th><th>面试价值</th></tr></thead>
+    <tbody>
+      <tr><td><code>common</code></td><td>横切能力：限流、LLM 接入、结构化输出、Prompt 安全、Stream 异步模板、统一评估</td><td>~3.1K / 34 文件</td><td><span class="pill pill--must">必讲</span></td></tr>
+      <tr><td><code>infrastructure</code></td><td>技术基座：S3、Tika 解析、文本清洗、Redis、iText PDF、MapStruct</td><td>~2.6K / 14 文件</td><td>中</td></tr>
+      <tr><td><code>resume</code></td><td>简历：多格式解析、哈希去重、Stream 异步分析、重试、PDF 导出</td><td>~1.8K / 16 文件</td><td><span class="pill pill--know">练手首选</span></td></tr>
+      <tr><td><code>interview</code></td><td>文字面试：Skill 出题、JD 解析、历史题去重、多轮追问、异步评估</td><td>~4.0K / 27 文件</td><td>高</td></tr>
+      <tr><td><code>voiceinterview</code></td><td>实时语音：WebSocket + 千问3 ASR/TTS/LLM、VAD、实时字幕、上下文压缩</td><td>~5.4K / 28 文件</td><td><span class="pill pill--must">技术密度最高</span></td></tr>
+      <tr><td><code>knowledgebase</code></td><td>知识库：异步向量化、RAG 问答、题库生成、专项面试编排</td><td>~5.5K / 49 文件</td><td><span class="pill pill--must">体量最大</span></td></tr>
+      <tr><td><code>interviewschedule</code></td><td>日程：规则 + AI 双引擎解析邀请文本、日历、状态流转</td><td>~0.9K / 11 文件</td><td>低但好讲</td></tr>
+      <tr><td><code>llmprovider</code></td><td>多模型配置：Provider 增删改查、密钥加密落盘、默认模型切换</td><td>~1.9K / 17 文件</td><td>中</td></tr>
+      <tr><td><code>frontend</code></td><td>React SPA：6 大页面群</td><td>~18.0K / 85 文件</td><td>低（非目标岗）</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="num">F</span>主干路由（被问“接口怎么设计的”时用）</h2>
+  <table>
+    <thead><tr><th style="width:38%">前缀 / 端点</th><th style="width:16%">模块</th><th>代表端点</th></tr></thead>
+    <tbody>
+      <tr><td><code>/api/resumes/**</code></td><td>resume</td><td><code>POST /api/resumes/upload</code>、<code>GET /api/resumes/{id}/export</code></td></tr>
+      <tr><td><code>/api/interview/**</code></td><td>interview</td><td><code>POST /api/interview/sessions</code>、<code>POST .../answers</code>、<code>GET .../report</code></td></tr>
+      <tr><td><code>/api/interview/skills/**</code></td><td>interview</td><td><code>GET /api/interview/skills</code>（方向与题目参考）</td></tr>
+      <tr><td><code>/api/knowledgebase/**</code>、<code>/api/rag-chat/**</code></td><td>knowledgebase</td><td><code>POST /api/knowledgebase/query</code>（<strong>SSE</strong>）</td></tr>
+      <tr><td><code>/api/knowledgebase-interviews/**</code></td><td>knowledgebase</td><td><code>POST .../sessions</code></td></tr>
+      <tr><td><code>/api/voice-interview/**</code></td><td>voiceinterview</td><td><code>POST /api/voice-interview/sessions</code></td></tr>
+      <tr><td><code>/ws/voice-interview/{sessionId}</code></td><td>voiceinterview</td><td><strong>WS 独立于 <code>/api</code> 前缀</strong>，挂在 <code>/ws/</code> 下</td></tr>
+      <tr><td><code>/api/interview-schedule/**</code></td><td>interviewschedule</td><td><code>POST /api/interview-schedule/parse</code></td></tr>
+      <tr><td><code>/api/llm-provider/**</code></td><td>llmprovider</td><td><code>PUT .../default-provider</code>、<code>POST .../{id}/test</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="num">G</span>六个关键设计决策（一句话版 · 详细话术见第 5 课）</h2>
+  <table>
+    <thead><tr><th style="width:32%">决策</th><th style="width:34%">理由</th><th>替代方案与代价</th></tr></thead>
+    <tbody>
+      <tr><td>PG + pgvector 单库，不引独立向量库</td><td>关系数据与向量同一事务语义演进；单实例够用；精简组件</td><td>Milvus / Qdrant / ES：检索更强，多一个运维组件</td></tr>
+      <tr><td>Redis Stream 而非 Kafka 做异步</td><td>Redis 已在架构里（缓存+限流+会话），复用不加组件；<code>AbstractStreamProducer/Consumer</code> 统一了生产消费与 ACK</td><td>Kafka / RabbitMQ：吞吐生态更强，加运维成本</td></tr>
+      <tr><td>LLM 接入收敛到 <code>LlmProviderRegistry</code> + <code>StructuredOutputInvoker</code></td><td>运行期可切默认模型不改代码；重试与降级集中一处，业务只声明“要什么结构”</td><td>各模块直连 SDK：实现简单，但换模型要改代码、重试逻辑重复</td></tr>
+      <tr><td>文字/语音共用 <code>UnifiedEvaluationService</code></td><td>两种形态评估口径必须可比（同报告结构、同评分维度）</td><td>各写一套：可特化，但结果不可比、维护双份</td></tr>
+      <tr><td>出题策略外置为 <code>resources/skills/&lt;方向&gt;/SKILL.md</code></td><td>内置 10+ 方向，运行期由 Spring AI Agent Utils 加载；<strong>新增方向只加目录，不改 Java</strong></td><td>硬编码在 Java：改方向要动代码、发版</td></tr>
+      <tr><td>运行期 Provider 配置落用户目录</td><td>写 <code>~/.interview-guide/</code>，不污染源码/jar；API Key 加密落盘（密钥来自 <code>APP_AI_CONFIG_ENCRYPTION_KEY</code>）</td><td>写回 <code>application.yml</code>：容器内不可写、易误提交密钥</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="num">H</span>两条最常被要求“走一遍”的数据流</h2>
+  <p style="font-family:var(--sans);font-size:.82rem;margin-bottom:.4rem"><strong>① 简历上传 → 异步分析 → PDF（最典型，四层全串）</strong></p>
+  <pre><code>ResumeController → ResumeUploadService
+   ├─ 校验类型/大小 → 计算内容哈希 → 按 hash 查重（命中复用）
+   ├─ 写 S3（RustFS） → 落库 ResumeEntity(PENDING)
+   ├─ Producer 投递 → Redis Stream（XADD） → 立即返回 Result(PENDING)
+   └─ 前端轮询 GET /api/resumes
+AnalyzeStreamConsumer
+   ├─ Tika 解析 + 文本清洗
+   ├─ StructuredOutputInvoker 结构化输出（LLM）
+   └─ 更新 ResumeAnalysisEntity（COMPLETED / FAILED，最多重试 3 次）
+导出：GET /api/resumes/{id}/export → iText PDF</code></pre>
+
+  <p style="font-family:var(--sans);font-size:.82rem;margin-bottom:.4rem"><strong>② RAG 问答（查询改写 → 向量检索 → SSE 流式）</strong></p>
+  <pre><code>POST /api/knowledgebase/query (SSE)
+   → KnowledgeBaseQueryService
+   → LLM 查询改写（prompts/knowledgebase-query-rewrite.st）
+   → pgvector 相似度检索（TopK + 阈值 · COSINE）
+   → 组装上下文（knowledgebase-query-system/user.st）
+   → LLM 流式 token → SSE 逐块推送 → 前端虚拟列表打字机渲染
+   → 持久化 RagChatMessageEntity</code></pre>
+
+  <h2><span class="num">I</span>60 秒陈述 · 三段检查点</h2>
+  <table>
+    <thead><tr><th style="width:14%">段</th><th style="width:22%">作用</th><th>必须出现的内容</th></tr></thead>
+    <tbody>
+      <tr><td>第一段</td><td>交代来源</td><td>开源项目 + 作者（Snailclimb / JavaGuide）+ 协议 + <strong>我做了深度拆解和二次开发</strong> + 点出强项方向</td></tr>
+      <tr><td>第二段</td><td>划定贡献边界</td><td>发现问题 → 定位 → <strong>判断</strong> → 方案取舍 → 验证（<strong>五环缺一不可</strong>）</td></tr>
+      <tr><td>第三段</td><td>设定话题方向</td><td>把模糊问题拆成可验证的指标 + 一个反直觉的结论（把追问引向你准备过的地方）</td></tr>
+    </tbody>
+  </table>
+
+  <footer class="ret">
+    参考卡 01 · 项目全景 · 出处：<code>README.md</code>、<code>.arch-docs/ARCHITECTURE.md</code>、<code>AGENTS.md</code>（已抽查核对）
+    · 课程索引 <a href="../NOTES.md">NOTES.md</a>
+  </footer>
+
+</div>
+</body>
+</html>

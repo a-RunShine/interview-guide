@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 3 课 · 跟一条真实请求走完全程</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="lesson-head">
+    <div class="course-tag">
+      <span>InterviewGuide 面试准备</span>
+      <span class="sep">/</span>
+      <span>阶段 1 · 理解骨架</span>
+      <span class="sep">/</span>
+      <span>第 3 课</span>
+    </div>
+    <h1>跟一条真实请求走完全程</h1>
+    <p class="subtitle">「简历上传 → Redis Stream 异步分析 → PDF」。这一条链路一次串起四层，是读懂这个项目最短的路。</p>
+  </header>
+
+  <p class="lede">按你的要求，从这一课起只做<strong>理解</strong>，不动任何代码。贡献的事挂起，等你哪天觉得「这里我知道该怎么改」再说。</p>
+
+  <p>先说为什么挑这条链路，而不是从 <code>common/</code> 开始读：</p>
+
+  <div class="card">
+    <p class="card-title">这条链路的特殊性</p>
+    <ul style="margin-bottom:0">
+      <li>它是<strong>唯一一条把四层都走完</strong>的链路：Controller → Service → infrastructure（文件/解析）→ common（异步模板 + LLM）→ Redis Stream 消费者。</li>
+      <li>它是<strong>最简单的业务模块</strong>（约 1.8K 行 / 16 文件）。其他模块都是它的加强版——读懂它，再看知识库、面试、语音，结构都是同一个模子。</li>
+      <li>面试官问「你讲讲一个请求在你们系统里怎么走」，答得好坏几乎全取决于能不能把这条链路说顺。</li>
+      <li>后面每一课的内容都从这里长出来：第 7 课（Stream 模板细节）、第 8 课（LLM 接入）、八股课（事务边界、线程池）都能挂在这条链路上。</li>
+    </ul>
+  </div>
+
+  <h2><span class="num">1</span>先看角色：十个类，四个层</h2>
+
+  <p>读代码最怕不知道「谁是谁」。先把这张表记住，后面所有流程都能往上挂。</p>
+
+  <table>
+    <thead><tr><th style="width:30%">类</th><th style="width:22%">所在层</th><th>在链路里的角色</th></tr></thead>
+    <tbody>
+      <tr><td><code>ResumeController</code></td><td><code>modules/resume</code></td><td>接 HTTP，校验参数，转发给 Service</td></tr>
+      <tr><td><code>ResumeUploadService</code></td><td><code>modules/resume/service</code></td><td><strong>编排中枢</strong>。同步段那 8 步全在这里</td></tr>
+      <tr><td><code>ResumeParseService</code></td><td>同上</td><td>用 Apache Tika 抽文本、探测 MIME 类型</td></tr>
+      <tr><td><code>ResumePersistenceService</code></td><td>同上</td><td>落库、按内容哈希去重、分析结果序列化</td></tr>
+      <tr><td><code>FileStorageService</code></td><td><code>infrastructure/file</code></td><td>读写 S3（本地是 RustFS）</td></tr>
+      <tr><td><code>AnalyzeStreamProducer</code></td><td><code>modules/resume/listener</code></td><td>把分析任务投进 Redis Stream</td></tr>
+      <tr><td><code>AbstractStreamProducer</code></td><td><strong><code>common/async</code></strong></td><td>发送骨架：<code>sendTask</code> 模板方法</td></tr>
+      <tr><td><code>AnalyzeStreamConsumer</code></td><td><code>modules/resume/listener</code></td><td>消费消息，驱动状态机</td></tr>
+      <tr><td><code>AbstractStreamConsumer</code></td><td><strong><code>common/async</code></strong></td><td>消费骨架：ACK、重试、pending 认领</td></tr>
+      <tr><td><code>ResumeGradingService</code></td><td><code>modules/resume/service</code></td><td><strong>整条链路里唯一真正调 LLM 的地方</strong></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">注意这一栏</span>
+    <p style="margin-bottom:0">两个大写字母开头的抽象类在 <code>common/async</code> 里，其余都在 <code>modules/resume</code> 里。<strong>这就是这个项目的分层约定：可复用的骨架放 common，业务实现放各自模块。</strong>后面你会看到 <code>common/async</code> 下有 5 个消费者子类，分散在四个业务模块里。</p>
+  </div>
+
+  <h2><span class="num">2</span>同步段：上传接口做的 8 件事</h2>
+
+  <p>读 <code>ResumeUploadService.uploadAndAnalyze(MultipartFile)</code>（共 235 行，主方法在第 48–111 行）。它按顺序做了 8 件事，每一步都有日志埋点——<strong>这不是装饰，是刻意留的可观测性</strong>，后面第 10 课会讲。</p>
+
+  <div class="flow">
+    <div class="lane lane--sync">
+      <span class="lane-label">同步段 · 在 HTTP 请求线程里跑完</span>
+      <ol>
+        <li><code>validateFile(file, 10MB, "简历")</code> —— 大小与基础校验</li>
+        <li><code>detectContentType(file)</code> → 白名单校验，不支持就抛异常</li>
+        <li><code>findExistingResume(file)</code> —— <strong>SHA-256 内容哈希去重</strong>，命中则直接返回历史结果（<code>duplicate: true</code>）</li>
+        <li><code>parseResume(file)</code> —— Tika 抽文本；抽不出（如扫描版 PDF）就抛 <code>RESUME_PARSE_FAILED</code></li>
+        <li><code>storageService.uploadResume(file)</code> —— 写 S3，拿到 <code>fileKey</code> / <code>fileUrl</code></li>
+        <li><code>saveResume(...)</code> —— 落库，状态置 <code>PENDING</code></li>
+        <li><code>analyzeStreamProducer.sendAnalyzeTask(id, text)</code> —— <strong>只投递，不执行</strong></li>
+        <li>组装 <code>Map</code> 返回 —— 状态是 <code>PENDING</code></li>
+      </ol>
+      <p class="lane-note">耗时日志把这段拆成「解析耗时 / 存储耗时 / 总耗时」三段——因为这三段是最可能变慢的地方。</p>
+    </div>
+
+    <div class="boundary">第 7 步是同步与异步的分界</div>
+
+    <div class="lane lane--async">
+      <span class="lane-label">异步段 · 在消费者线程里跑，HTTP 请求早已返回</span>
+      <ol>
+        <li>消费者从 Stream 取到消息</li>
+        <li><code>shouldSkip</code> —— 实体不存在、或已是 <code>COMPLETED</code>，就跳过</li>
+        <li><code>markProcessing</code> —— 状态置 <code>PROCESSING</code></li>
+        <li><code>processBusiness</code> → <code>gradingService.analyzeResume(content)</code> —— <strong>唯一调 LLM 的地方</strong></li>
+        <li><code>saveAnalysis(resume, analysis)</code> —— 结果落库</li>
+        <li><code>markCompleted</code> —— 状态置 <code>COMPLETED</code></li>
+      </ol>
+      <p class="lane-note">前端以固定间隔轮询 <code>GET /api/resumes</code>，看 <code>analyzeStatus</code> 与最新分数。</p>
+    </div>
+  </div>
+
+  <div class="callout callout--good">
+    <span class="callout-label">面试必答：为什么上传不阻塞？</span>
+    <p style="margin-bottom:0">同步段只做<strong>不需要大模型</strong>的事：校验、解析文本、写对象存储、落库、投递。真正耗时的 LLM 评分被推到消费者里。<br>
+    一句话版本：<strong>「上传接口的职责是把它登记进系统并排好队，不是把它算完。」</strong></p>
+  </div>
+
+  <h2><span class="num">3</span>投递段：模板方法模式</h2>
+
+  <p><code>AbstractStreamProducer</code> 只有 56 行，结构是教科书级的<strong>模板方法</strong>：父类写死骨架（<code>sendTask</code>），子类只填 5 个钩子。</p>
+
+  <pre><code>// 父类：骨架固定，失败一定走 onSendFailed
+protected boolean sendTask(T payload) {
+  try {
+    String messageId = redisService.streamAdd(streamKey(), buildMessage(payload),
+                                               AsyncTaskStreamConstants.STREAM_MAX_LEN);
+    log.info("{}任务已发送到Stream: {}, messageId={}", taskDisplayName(), payloadIdentifier(payload), messageId);
+    return true;
+  } catch (Exception e) {
+    log.error("发送{}任务失败: {}, error={}", taskDisplayName(), payloadIdentifier(payload), e.getMessage(), e);
+    onSendFailed(payload, "任务入队失败: " + e.getMessage());
+    return false;
+  }
+}
+
+// 子类必须实现的 5 个钩子
+protected abstract String taskDisplayName();               // 日志用
+protected abstract String streamKey();                     // 发到哪条流
+protected abstract Map&lt;String, String&gt; buildMessage(T payload);
+protected abstract String payloadIdentifier(T payload);    // 日志用，标识是哪个任务
+protected abstract void onSendFailed(T payload, String error);</code></pre>
+
+  <p><code>AnalyzeStreamProducer</code> 填的答案是：流 key 是 <code>resume:analyze:stream</code>，消息体三个字段——<code>resumeId</code> / <code>content</code> / <code>retryCount=0</code>，投递失败时把实体状态置 <code>FAILED</code>。</p>
+
+  <div class="callout">
+    <span class="callout-label">两个值得单独记住的细节</span>
+    <p><strong>① <code>STREAM_MAX_LEN = 1000</code></strong>：投递时带上了这个长度上限，Redis 会自动裁剪旧消息。<strong>否则 Stream 会无限增长</strong>——这是用 Redis 当队列时最常见的坑之一。</p>
+    <p style="margin-bottom:0"><strong>② <code>retryCount</code> 写在消息体里</strong>，不是靠 Redis 投递次数计。为什么这么设计，见第 5 节，那是本课最重要的判断。</p>
+  </div>
+
+  <h2><span class="num">4</span>消费段：一个五出口的状态机</h2>
+
+  <p><code>AbstractStreamConsumer.processMessage</code> 是整个异步机制的心脏。它对每条消息有<strong>五种结局</strong>，其中四种都是「ACK 后丢弃」：</p>
+
+  <ul class="paths">
+    <li class="drop"><b>解析失败</b> → ACK 丢弃<br><span class="why">消息体格式坏了。不能让它一直重投堵住队列（毒丸消息）。</span></li>
+    <li class="drop"><b>payload 为 null</b> → ACK 丢弃<br><span class="why">子类 <code>parsePayload</code> 判定字段缺失（如 <code>resumeId</code> 或 <code>content</code> 为 null）。</span></li>
+    <li class="drop"><b><code>shouldSkip</code> 返回 true</b> → ACK 丢弃<br><span class="why"><strong>这是幂等保护</strong>。简历这边：实体不存在，或状态已是 <code>COMPLETED</code>，就不重复烧 LLM 配额。</span></li>
+    <li class="drop"><b><code>tryMarkProcessing</code> 返回 false</b> → ACK 丢弃<br><span class="why">没抢到任务的领取权。默认实现永远返回 true，只有需要原子领取的消费者才覆写。</span></li>
+    <li class="ok"><b><code>processBusiness</code> 成功</b> → <code>markCompleted</code> → ACK<br><span class="why">正常路径。</span></li>
+    <li class="fail"><b><code>processBusiness</code> 抛异常</b> → 重试或标记失败 → ACK<br><span class="why">见下一节。注意：<strong>失败也会 ACK</strong>。</span></li>
+  </ul>
+
+  <p>还有三个实现细节值得看，都是「这个项目的代码规范不只是写着好看」的证据：</p>
+
+  <table>
+    <thead><tr><th style="width:34%">细节</th><th>为什么这样写</th></tr></thead>
+    <tbody>
+      <tr><td>线程池显式写成 <code>ThreadPoolExecutor(1, 1, ...)</code>，不用 <code>Executors.newSingleThreadExecutor()</code></td><td><code>AGENTS.md</code> 明令禁止 <code>Executors.newXxxThreadPool()</code>——它默认用无界队列，队列积压时可能 OOM。这里显式配置并指定了拒绝策略 <code>AbortPolicy</code>。<strong>这是项目规则被真实执行的证据。</strong></td></tr>
+      <tr><td>消费者名 = 前缀 + <code>UUID</code> 前 8 位</td><td>每个消费者实例名字唯一，才能支持多实例部署时各自持有自己的 pending 列表。</td></tr>
+      <tr><td>消费循环带 <code>PENDING_IDLE_TIMEOUT_MS = 5 分钟</code> 与 <code>PENDING_CLAIM_BATCH_SIZE = 10</code></td><td>这是 Redis Stream 的 <strong>pending 消息认领</strong>：某个消费者进程崩了、消息没 ACK，5 分钟后别的消费者可以把它领过来重做。这是 Redis Stream 比 List 强的关键，也是它敢当队列用的原因。</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="num">5</span>本课最重要的判断：失败为什么也 ACK</h2>
+
+  <p>看 <code>processMessage</code> 的异常分支（第 131–141 行）：</p>
+
+  <pre><code>} catch (Exception e) {
+  log.error("{} task failed: {}", taskDisplayName(), payloadIdentifier(payload), e);
+  if (retryCount &lt; AsyncTaskStreamConstants.MAX_RETRY_COUNT) {   // MAX_RETRY_COUNT = 3
+    retryMessage(payload, retryCount + 1);                        // 重新 XADD 一条新消息
+  } else {
+    markFailed(payload, truncateError(...));
+  }
+  ackMessage(messageId);                                          // 无论如何都 ACK
+}</code></pre>
+
+  <p>关键在最后一行：<strong>不管是重试还是彻底失败，原消息都被 ACK 掉了。</strong>重试不是「让 Redis 把这条消息再投一次」，而是 <code>retryMessage</code> <strong>重新 XADD 一条全新的消息</strong>，把 <code>retryCount+1</code> 写在新消息体里。</p>
+
+  <div class="callout callout--good">
+    <span class="callout-label">这个设计换来了什么 / 代价是什么</span>
+    <p><strong>换来：</strong>重试次数完全可控（计数在消息体里，不依赖 Redis 的投递计数）；业务失败不会变成无限重投；重试的消息自带完整上下文（<code>content</code> 也重新带上了）。</p>
+    <p style="margin-bottom:0"><strong>代价：</strong>如果 <code>retryMessage</code> 里的那次 <code>streamAdd</code> 也失败，任务就真的丢了——代码里只能 <code>catch</code> 后把状态置 <code>FAILED</code>，靠状态字段兜底，<strong>没有补偿扫描去捞它</strong>。</p>
+  </div>
+
+  <p>但注意：<strong>pending 认领机制仍然开着。</strong>所以这个系统里其实有<strong>两套重试机制，各管一段</strong>：</p>
+
+  <table>
+    <thead><tr><th style="width:34%">机制</th><th style="width:30%">兜住什么情况</th><th>计数依据</th></tr></thead>
+    <tbody>
+      <tr><td>业务重试（<code>retryMessage</code> 重新入队）</td><td>LLM 调用失败、解析失败等<strong>业务层异常</strong></td><td>消息体里的 <code>retryCount</code>，上限 3</td></tr>
+      <tr><td>Pending 认领（<code>XAUTOCLAIM</code> 语义）</td><td><strong>消费者进程崩了</strong>，消息既没 ACK 也没处理完</td><td>Redis 侧的 pending 空闲时长，5 分钟</td></tr>
+    </tbody>
+  </table>
+
+  <p>把这段说清楚，比背「我用了 Redis Stream」高一个量级。<strong>面试官问「消息丢了怎么办」，答案就是这两层。</strong></p>
+
+  <h2><span class="num">6</span>事务边界：同一个类里为什么两种写法</h2>
+
+  <p>这是我在读 <code>ResumeUploadService</code> 时觉得最值得单独讲的一处。同一个类里，两个方法用了完全不同的模式：</p>
+
+  <table>
+    <thead><tr><th style="width:24%">&nbsp;</th><th style="width:38%"><code>uploadAndAnalyze</code></th><th><code>reanalyze</code></th></tr></thead>
+    <tbody>
+      <tr><td>写操作</td><td>只有「插入一条新记录」</td><td>「读实体 → 改状态 → 清错误 → 保存」<strong>一组写</strong></td></tr>
+      <tr><td>事务</td><td>方法上没有手写事务包装</td><td>显式用 <code>transactionalExecutor.run(...)</code> 包成一个事务</td></tr>
+      <tr><td>投递位置</td><td>落库之后</td><td><strong>事务提交之后</strong>（代码注释原文：「事务提交后再发送分析任务到 Stream」）</td></tr>
+    </tbody>
+  </table>
+
+  <p>为什么 <code>reanalyze</code> 必须把投递挪到事务外？推一遍因果：</p>
+
+  <ol class="steps">
+    <li>如果投递发生在事务<strong>内部</strong>，消息会在事务提交<strong>之前</strong>就进 Stream。</li>
+    <li>消费者可能立刻抢到这条消息，去读实体——此时读到的还是<strong>未提交的旧状态</strong>（<code>COMPLETED</code> 或 <code>PROCESSING</code>）。</li>
+    <li><code>shouldSkip</code> 看到 <code>COMPLETED</code>，判定「已分析过」，<strong>ACK 丢弃</strong>。</li>
+    <li>结果：用户点了「重新分析」，事务提交了、状态也改回 <code>PENDING</code> 了，<strong>但任务永远不会被执行</strong>——前端一直转圈。</li>
+  </ol>
+
+  <div class="callout callout--good">
+    <span class="callout-label">这条因果链正好命中项目铁律</span>
+    <p style="margin-bottom:0"><code>AGENTS.md</code> 里写着：「<strong>LLM、S3、外部 HTTP 调用不得放在数据库事务内</strong>」。Redis 投递同理。<br>
+    面试里被问「事务怎么写」，你把这条讲出来——不是背规则，而是<strong>说清违反规则会产生什么错误</strong>——分量完全不同。</p>
+  </div>
+
+  <h2><span class="num">7</span>模板的扩展点：五个消费者，只有一个用上了</h2>
+
+  <p><code>AbstractStreamConsumer</code> 留了个钩子 <code>tryMarkProcessing</code>，默认实现无条件返回 <code>true</code>。全项目有 5 个消费者子类：</p>
+
+  <table>
+    <thead><tr><th style="width:42%">子类</th><th style="width:20%">所在模块</th><th>是否覆写 <code>tryMarkProcessing</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>AnalyzeStreamConsumer</code></td><td>resume</td><td>否（用默认）</td></tr>
+      <tr><td><code>VectorizeStreamConsumer</code></td><td>knowledgebase</td><td>否（用默认）</td></tr>
+      <tr><td><code>QuestionGenStreamConsumer</code></td><td>knowledgebase</td><td><strong>是 —— 走 <code>stateService.tryMarkProcessing(kbId, taskId)</code></strong></td></tr>
+      <tr><td><code>EvaluateStreamConsumer</code></td><td>interview</td><td>否（用默认）</td></tr>
+      <tr><td><code>VoiceEvaluateStreamConsumer</code></td><td>voiceinterview</td><td>否（用默认）</td></tr>
+    </tbody>
+  </table>
+
+  <p>为什么只有题库生成需要覆写？因为它的消息里带 <code>taskId</code>，<strong>可以拿它做幂等键</strong>——「只有当这个 taskId 对应的任务还没被领取时，才允许置为 PROCESSING」。其余四个没有这么细的幂等粒度，用默认行为就够。</p>
+
+  <div class="callout">
+    <span class="callout-label">这个对比本身就是一句好答案</span>
+    <p style="margin-bottom:0">被问「你怎么设计可复用的异步组件」，可以答：<strong>「骨架写死不变的部分，变化的部分留成钩子；钩子给一个够用的默认实现，只有真正需要特殊语义的场景才覆写。」</strong>然后举这 5 个消费者里 1 个覆写的例子——这是有代码支撑的答案，不是泛泛而谈。</p>
+  </div>
+
+  <h2><span class="num">8</span>三个可以主动提出的观察</h2>
+
+  <p>这三条是我读代码时的发现，<strong>都不需要改代码，但都能在面试里主动说出来</strong>。主动指出问题比等着被问出来强得多——它证明你不只是读过，还想过。</p>
+
+  <div class="callout callout--risk">
+    <span class="callout-label">观察一 · 状态回写失败会被吞掉</span>
+    <p style="margin-bottom:0"><code>AnalyzeStreamConsumer.updateAnalyzeStatus</code> 里是 <code>catch (Exception e) { log.error(...) }</code>：只记日志，不抛出。<br>
+    后果：如果 <code>markCompleted</code> 的数据库写入失败，这个异常被吞掉，但消息<strong>已经被 ACK</strong>。于是<strong>实体状态永远停在 <code>PROCESSING</code>，队列里也没有任何待处理任务，前端会一直转圈</strong>，且没有兜底扫描去修正。<br>
+    <strong>我会怎么说：</strong>「这类『状态回写失败』我倾向至少上报一个指标，或者加一个定时扫描把超时的 PROCESSING 记录捞回来重投。」</p>
+  </div>
+
+  <div class="callout callout--risk">
+    <span class="callout-label">观察二 · 先写对象存储再落库，没有补偿</span>
+    <p style="margin-bottom:0">第 5 步写 S3，第 6 步才落库。如果第 6 步失败，S3 里会留下一个<strong>没有数据库记录的孤儿文件</strong>，而且没有清理机制。<br>
+    <strong>注意别把答案说简单了：</strong>反过来的顺序（先落库再上传）也不对——那会留下「有记录但没文件」的坏数据。更完整的做法是两阶段提交或定时对账。<strong>能说出「两种顺序都有问题」，比只指出一个问题更显水平。</strong></p>
+  </div>
+
+  <div class="callout callout--risk">
+    <span class="callout-label">观察三 · 重新上传一份「之前分析失败」的简历不会自动重试</span>
+    <p style="margin-bottom:0"><code>handleDuplicateResume</code> 命中哈希后，<strong>有</strong>历史分析结果就返回它；<strong>没有</strong>则只返回当前状态，<strong>不重新投递任务</strong>。<br>
+    这是「不重复烧 LLM 配额」的保守取舍，但用户视角是「我重新上传了，怎么还是失败」。需要手动调 <code>POST /api/resumes/{id}/reanalyze</code>。这种「设计取舍带来体验代价」的点，面试里很好用。</p>
+  </div>
+
+  <h2><span class="num">9</span>你该亲自打开的三个文件</h2>
+
+  <p>上面所有内容都来自这三个文件。<strong>别只信我的转述——自己去翻一遍</strong>，这样被追问细节时你脑子里有画面。</p>
+
+  <table>
+    <thead><tr><th style="width:52%">文件</th><th>看什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>modules/resume/service/ResumeUploadService.java</code><br><span style="color:var(--ink-faint);font-size:.85rem">235 行，重点第 48–111 行</span></td><td>同步段 8 步的顺序；<code>uploadAndAnalyze</code> 与 <code>reanalyze</code> 的事务差异（第 190–194 行）</td></tr>
+      <tr><td><code>common/async/AbstractStreamConsumer.java</code><br><span style="color:var(--ink-faint);font-size:.85rem">209 行，重点第 95–142 行</span></td><td>五出口状态机；失败也 ACK 的那一段；线程池与 pending 参数</td></tr>
+      <tr><td><code>modules/resume/listener/AnalyzeStreamConsumer.java</code><br><span style="color:var(--ink-faint);font-size:.85rem">164 行</span></td><td><code>shouldSkip</code> 的幂等判断；<code>retryMessage</code> 怎么重新入队（第 125–146 行）</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="num">10</span>理解验收：合上页面，把这五个问题答出来</h2>
+
+  <p>这是本课的验收标准。<strong>答不上来就回到对应小节重读</strong>，不用往下走——后面的课全部建立在这五条之上。</p>
+
+  <div class="recall" data-lesson="0003">
+    <h3>主动回忆自测</h3>
+    <div class="recall-q"
+      data-q="用一句话说清：为什么上传接口不阻塞？同步段和异步段的分界在哪一步？"
+      data-a="同步段只做<strong>不需要大模型</strong>的事：校验 → 探测类型 → 哈希去重 → Tika 解析文本 → 写 S3 → 落库(PENDING) → 投递任务。<br>
+      <strong>分界在第 7 步 <code>sendAnalyzeTask</code>：它只投递，不执行。</strong>真正耗时的 LLM 评分被推到消费者线程里，请求线程立刻返回 <code>PENDING</code>。<br>
+      一句话版本：「上传接口的职责是登记进系统并排好队，不是把它算完。」"></div>
+    <div class="recall-q"
+      data-q="消费一条消息有几种结局？哪几种会「ACK 后丢弃」？"
+      data-a="五种结局，<strong>四种是 ACK 丢弃</strong>：<br>
+      ① 消息体解析失败（毒丸，不能堵队列）② <code>parsePayload</code> 返回 null（必需字段缺失）③ <code>shouldSkip</code> 为真（<strong>幂等保护</strong>：实体不存在或已 COMPLETED）④ <code>tryMarkProcessing</code> 返回 false（没抢到领取权）。<br>
+      ⑤ 成功 → <code>markCompleted</code> → ACK；异常 → 重试或标记失败 → <strong>也 ACK</strong>。"></div>
+    <div class="recall-q"
+      data-q="业务失败怎么重试？为什么说系统里其实有两套重试机制？"
+      data-a="业务重试不是让 Redis 重投，而是 <code>retryMessage</code> <strong>重新 XADD 一条新消息</strong>，把 <code>retryCount+1</code> 写在消息体里，上限 3 次（<code>MAX_RETRY_COUNT</code>）；原消息<strong>无条件 ACK</strong>。<br>
+      <strong>两套机制：</strong>① 业务重试（重新入队，计数在消息体）兜住 LLM 调用失败等业务异常；
+      ② <strong>pending 认领</strong>（空闲超过 5 分钟可被其他消费者领取）兜住<strong>消费者进程崩溃</strong>导致没 ACK 的情况。<br>
+      代价：如果 <code>retryMessage</code> 的 <code>streamAdd</code> 也失败，任务会真丢——只置 FAILED 状态，没有补偿扫描。"></div>
+    <div class="recall-q"
+      data-q="reanalyze 为什么必须把投递放在事务提交之后？推一遍因果。"
+      data-a="因为投递如果在事务内，消息会在<strong>事务提交前</strong>就进 Stream → 消费者可能立刻抢到并去读实体 → 读到的是<strong>未提交的旧状态</strong>（<code>COMPLETED</code>/<code>PROCESSING</code>）→ <code>shouldSkip</code> 判定「已分析过」<strong>ACK 丢弃</strong> → 事务照样提交、状态也改回 <code>PENDING</code>，但<strong>任务永远不会被执行</strong>，前端一直转圈。<br>
+      这也正是项目铁律「LLM / S3 / 外部 HTTP 调用不得放在数据库事务内」的原因。<strong>面试要讲的是违反规则会产生什么错误，不是背规则。</strong>"></div>
+    <div class="recall-q"
+      data-q="五个消费者里为什么只有题库生成覆写了 tryMarkProcessing？这个对比说明了什么设计原则？"
+      data-a="因为题库生成的消息带 <code>taskId</code>，<strong>可以拿它当幂等键</strong>做原子领取（<code>stateService.tryMarkProcessing(kbId, taskId)</code>）；其余四个没有这么细的幂等粒度，用默认实现（无条件返回 true）就够。<br>
+      设计原则：<strong>骨架写死不变的部分，变化的部分留成钩子；钩子给一个够用的默认实现，只有真正需要特殊语义的场景才覆写。</strong>"></div>
+  </div>
+
+  <div class="card">
+    <p class="card-title">推荐主源</p>
+    <p style="margin-bottom:.5rem"><a href="https://redis.io/docs/latest/develop/data-types/streams/">Redis 官方文档 → Streams（重点看 Consumer Groups 与 Pending Entries 两节）</a></p>
+    <p style="margin-bottom:0;font-size:.9rem;color:var(--ink-soft)">读的时候带着三个问题：<strong>XADD 的 MAXLEN 是干什么的？XACK 之后消息去哪儿了？pending 列表为什么存在？</strong>
+    这三个问题答清楚，第 5 节那套「两套重试机制」你就不是背下来的，是真的懂了。约 20 分钟。</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">这一课之后</span>
+    <p style="margin-bottom:0">按你的节奏，下一课我建议讲<strong>顶层架构与分层约束</strong>——把这一条链路放回整个项目的坐标系里（<code>common</code> / <code>infrastructure</code> / <code>modules</code> 三层为什么这么切，边界在哪儿）。<br>
+    但如果你想先换一条链路看（比如 RAG 问答，或者语音面试），也可以直接说。<strong>你定方向，我出材料。</strong></p>
+  </div>
+
+  <nav class="lesson-nav">
+    <a href="0001-可信框架与60秒陈述.html">← 第 1 课：可信框架与 60 秒陈述</a>
+    <span><a href="0002-第一刀-让被禁用的测试活过来.html">第 2 课（已挂起）</a> · <a href="../reference/项目全景卡.html">参考卡</a></span>
+  </nav>
+
+  <div class="lesson-foot">
+    第 3 课 · 阶段 1 理解骨架 · 全部结论均出自 <code>ResumeUploadService</code> / <code>AbstractStreamProducer</code> /
+    <code>AbstractStreamConsumer</code> / <code>AnalyzeStreamConsumer</code> / <code>AsyncTaskStreamConstants</code> 五个源文件的实际代码<br>
+    课程索引见 <a href="../NOTES.md">NOTES.md</a> · 目标与约束见 <a href="../MISSION.md">MISSION.md</a>
+  </div>
+
+</div>
+<script src="../assets/recall-quiz.js" defer></script>
+</body>
+</html>
