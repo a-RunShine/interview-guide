@@ -28,3 +28,7 @@ frontend/test-results/
 frontend/playwright-report/
 /.agents
 skills-lock.json
+
+# IDE / 工具本地配置
+.vscode/
+.workbuddy/

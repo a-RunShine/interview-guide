@@ -90,7 +90,7 @@ spring:
         index-type: HNSW
         distance-type: COSINE_DISTANCE
         dimensions: 1024  # text-embedding-v3实际生成的向量维度
-        initialize-schema: false # schema 统一由 Flyway 管理
+        initialize-schema: true # schema 统一由 Flyway 管理
         remove-existing-vector-store-table: false  # 保留现有表和数据
 
 # Application custom configuration
