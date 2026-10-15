@@ -107,3 +107,12 @@ docker compose -f docker-compose.dev.yml up -d
 - 后端 Java 细则：`.claude/rules/backend.md`
 - AI、限流、异步细则：`.claude/rules/ai-and-async.md`
 - 前端细则：`.claude/rules/frontend.md`
+
+## Cursor Cloud specific instructions
+
+- 这台 VM 没有 systemd。Docker 要用 `fuse-overlayfs` 存储驱动和 `iptables-legacy` / `ip6tables-legacy`，再以前台方式启动 `dockerd`。`sudo service docker start` 不会拉起守护进程。
+- 先把 `.env.example` 复制成仓库根目录 `.env`，再执行 `docker compose -f docker-compose.dev.yml up -d`。Compose 会读取这份 `.env`，Postgres 密码因此是 `password`。只有在变量未设置时，compose 文件自身的默认值才是 `123456`。
+- RustFS 容器用户是 uid/gid `10001`。首次启动前执行 `sudo chown -R 10001:10001 "$HOME/documents/interview_guide/rustFS"`，否则数据目录权限会导致容器退出。
+- `bootRun` 要求 `AI_BAILIAN_API_KEY` 和 `APP_AI_CONFIG_ENCRYPTION_KEY` 非空。`.env.example` 里的占位值足够启动，并覆盖面试日程这类不调用模型的功能。真正的 DashScope 调用需要替换 `AI_BAILIAN_API_KEY`。
+- 前端使用 Corepack 锁定的 pnpm 10.26.2。pnpm 10 默认跳过依赖构建脚本，安装后需要执行 `corepack pnpm rebuild esbuild @swc/core protobufjs --config.dangerouslyAllowAllBuilds=true`，否则 Vite 找不到 esbuild 二进制。
+- 登录 shell 里的 Node 可能先命中 `/exec-daemon/node`（22.14），它不能直接 `node --test` 运行前端 `.ts` 测试。前端校验用 `cd frontend && corepack pnpm run build`。
