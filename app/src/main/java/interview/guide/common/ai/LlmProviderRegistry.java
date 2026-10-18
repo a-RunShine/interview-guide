@@ -65,6 +65,8 @@ public class LlmProviderRegistry {
         "minimax", "embo-01"
     );
 
+    private volatile String cachedDefaultChatProviderId;
+
     @Autowired
     public LlmProviderRegistry(
             LlmProviderProperties properties,
@@ -157,6 +159,7 @@ public class LlmProviderRegistry {
         clientCache.clear();
         chatModelCache.clear();
         embeddingModelCache.clear();
+        cachedDefaultChatProviderId = null;
         log.info("[LlmProviderRegistry] Cache cleared ({} entries). Next access will re-create clients.", size);
     }
 
@@ -339,10 +342,16 @@ public class LlmProviderRegistry {
         if (globalSettingRepository == null) {
             return properties.getDefaultProvider();
         }
-        return globalSettingRepository.findById(LlmGlobalSettingEntity.SINGLETON_ID)
+        String cachedId = cachedDefaultChatProviderId;
+        if (cachedId != null) {
+            return cachedId;
+        }
+        String resolved = globalSettingRepository.findById(LlmGlobalSettingEntity.SINGLETON_ID)
             .map(LlmGlobalSettingEntity::getDefaultChatProviderId)
             .filter(id -> !isBlank(id))
             .orElse(properties.getDefaultProvider());
+        cachedDefaultChatProviderId = resolved;
+        return resolved;
     }
 
     private String resolveDefaultEmbeddingProviderId() {

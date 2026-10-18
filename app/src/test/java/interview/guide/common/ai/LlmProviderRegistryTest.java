@@ -3,6 +3,8 @@ package interview.guide.common.ai;
 import interview.guide.common.config.LlmProviderProperties;
 import interview.guide.common.config.LlmProviderProperties.ProviderConfig;
 import interview.guide.common.exception.BusinessException;
+import interview.guide.modules.llmprovider.model.LlmGlobalSettingEntity;
+import interview.guide.modules.llmprovider.repository.LlmGlobalSettingRepository;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -17,6 +19,7 @@ import org.springframework.ai.model.tool.ToolCallingManager;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -245,5 +248,37 @@ class LlmProviderRegistryTest {
     void testGetChatClient_disabledProvider() {
         // 占位测试：等 ProviderConfig 补齐 enabled 字段 + Registry 实现禁用分支后恢复断言。
         // 不写任何 mock，避免 Mockito 严格模式把占位记为异常失败。
+    }
+
+    @Test
+    @DisplayName("默认 Provider ID 只查询一次数据库，reload 后重新查询")
+    void defaultProviderIdIsCachedUntilReload() {
+        // Given：模拟 DB 里没有全局设置，让它回退到 properties 的默认 provider
+        LlmGlobalSettingRepository globalRepo = mock(LlmGlobalSettingRepository.class);
+        when(globalRepo.findById(LlmGlobalSettingEntity.SINGLETON_ID)).thenReturn(Optional.empty());
+        when(properties.getDefaultProvider()).thenReturn("test-provider");
+
+        ProviderConfig config = new ProviderConfig();
+        config.setBaseUrl("http://localhost:1234/v1");
+        config.setApiKey("test-key");
+        config.setModel("test-model");
+        when(properties.getProviders()).thenReturn(Map.of("test-provider", config));
+
+        LlmProviderRegistry registry =
+            new LlmProviderRegistry(properties, null, globalRepo, null, null, null, null);
+
+        // When：连续调用两次默认 ChatClient
+        registry.getDefaultChatClient();
+        registry.getDefaultChatClient();
+
+        // Then：第一次查了 DB，第二次命中缓存，所以只查了 1 次
+        verify(globalRepo, times(1)).findById(LlmGlobalSettingEntity.SINGLETON_ID);
+
+        // When：清缓存后再调用一次
+        registry.reload();
+        registry.getDefaultChatClient();
+
+        // Then：reload 之后会重新查一次 DB，总共 2 次
+        verify(globalRepo, times(2)).findById(LlmGlobalSettingEntity.SINGLETON_ID);
     }
 }
