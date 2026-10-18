@@ -16,10 +16,21 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.model.tool.ToolCallingManager;
+import org.springframework.ai.openai.OpenAiChatModel;
 
+import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -280,5 +291,107 @@ class LlmProviderRegistryTest {
 
         // Then：reload 之后会重新查一次 DB，总共 2 次
         verify(globalRepo, times(2)).findById(LlmGlobalSettingEntity.SINGLETON_ID);
+    }
+
+    @Test
+    @DisplayName("reload 与 getChatClient 并发时，新一代客户端使用 reload 之后的模型")
+    void reloadDoesNotMixChatClientWithPreviousChatModel() throws Exception {
+        String providerId = "test-provider";
+        ProviderConfig config = new ProviderConfig();
+        config.setBaseUrl("http://localhost:1234/v1");
+        config.setApiKey("test-key");
+        config.setModel("model-0");
+        when(properties.getProviders()).thenReturn(Map.of(providerId, config));
+
+        registry.getChatClient(providerId);
+
+        AtomicBoolean stop = new AtomicBoolean(false);
+        ExecutorService readers = Executors.newFixedThreadPool(8);
+        List<Future<?>> inFlight = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            inFlight.add(readers.submit(() -> {
+                while (!stop.get()) {
+                    assertNotNull(modelOf(registry.getChatClient(providerId)));
+                }
+            }));
+        }
+
+        int reloads = 200;
+        for (int i = 1; i <= reloads; i++) {
+            config.setModel("model-" + i);
+            registry.reload();
+        }
+        stop.set(true);
+        readers.shutdown();
+        assertTrue(readers.awaitTermination(10, TimeUnit.SECONDS));
+        for (Future<?> future : inFlight) {
+            future.get(5, TimeUnit.SECONDS);
+        }
+
+        assertEquals("model-" + reloads, modelOf(registry.getChatClient(providerId)));
+    }
+
+    @Test
+    @DisplayName("reload 期间尚未写回的默认 provider 不会污染下一代")
+    void reloadDropsInFlightDefaultProviderId() throws Exception {
+        LlmGlobalSettingRepository globalRepo = mock(LlmGlobalSettingRepository.class);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        when(globalRepo.findById(LlmGlobalSettingEntity.SINGLETON_ID)).thenAnswer(invocation -> {
+            if (calls.incrementAndGet() == 1) {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return Optional.of(globalSetting("provider-a"));
+            }
+            return Optional.of(globalSetting("provider-b"));
+        });
+
+        ProviderConfig providerA = new ProviderConfig();
+        providerA.setBaseUrl("http://localhost:1234/v1");
+        providerA.setApiKey("key-a");
+        providerA.setModel("model-a");
+        ProviderConfig providerB = new ProviderConfig();
+        providerB.setBaseUrl("http://localhost:1234/v1");
+        providerB.setApiKey("key-b");
+        providerB.setModel("model-b");
+        when(properties.getProviders()).thenReturn(Map.of("provider-a", providerA, "provider-b", providerB));
+
+        LlmProviderRegistry isolated =
+            new LlmProviderRegistry(properties, null, globalRepo, null, null, null, null);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<ChatClient> inFlight = executor.submit(isolated::getDefaultChatClient);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            isolated.reload();
+            release.countDown();
+
+            assertEquals("model-a", modelOf(inFlight.get(5, TimeUnit.SECONDS)));
+            assertEquals("model-b", modelOf(isolated.getDefaultChatClient()));
+            verify(globalRepo, times(2)).findById(LlmGlobalSettingEntity.SINGLETON_ID);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private static LlmGlobalSettingEntity globalSetting(String providerId) {
+        LlmGlobalSettingEntity entity = new LlmGlobalSettingEntity();
+        entity.setDefaultChatProviderId(providerId);
+        return entity;
+    }
+
+    private static String modelOf(ChatClient client) {
+        try {
+            Field requestField = client.getClass().getDeclaredField("defaultChatClientRequest");
+            requestField.setAccessible(true);
+            Object request = requestField.get(client);
+            Field modelField = request.getClass().getDeclaredField("chatModel");
+            modelField.setAccessible(true);
+            OpenAiChatModel model = (OpenAiChatModel) modelField.get(request);
+            return model.getOptions().getModel();
+        } catch (ReflectiveOperationException ex) {
+            throw new AssertionError("无法读取 ChatClient 持有的模型", ex);
+        }
     }
 }

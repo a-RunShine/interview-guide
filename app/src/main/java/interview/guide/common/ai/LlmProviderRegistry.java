@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Registry for managing and caching LLM providers.
@@ -47,9 +48,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class LlmProviderRegistry {
 
     private final LlmProviderProperties properties;
-    private final Map<String, ChatClient> clientCache = new ConcurrentHashMap<>();
-    private final Map<String, OpenAiChatModel> chatModelCache = new ConcurrentHashMap<>();
-    private final Map<String, EmbeddingModel> embeddingModelCache = new ConcurrentHashMap<>();
+    private final AtomicReference<Generation> generation = new AtomicReference<>(new Generation());
     private final LlmProviderRepository providerRepository;
     private final LlmGlobalSettingRepository globalSettingRepository;
     private final ApiKeyEncryptionService encryptionService;
@@ -64,8 +63,6 @@ public class LlmProviderRegistry {
         "baidu", "Embedding-V1",
         "minimax", "embo-01"
     );
-
-    private volatile String cachedDefaultChatProviderId;
 
     @Autowired
     public LlmProviderRegistry(
@@ -102,10 +99,8 @@ public class LlmProviderRegistry {
      * @throws IllegalArgumentException if the providerId is unknown
      */
     public ChatClient getChatClient(String providerId) {
-        return clientCache.computeIfAbsent(providerId, id -> {
-            log.info("[LlmProviderRegistry] Creating new client for provider: {}", id);
-            return createChatClient(id);
-        });
+        Generation current = generation.get();
+        return chatClient(current, providerId);
     }
 
     /**
@@ -114,7 +109,8 @@ public class LlmProviderRegistry {
      * @return The default ChatClient instance
      */
     public ChatClient getDefaultChatClient() {
-        return getChatClient(resolveDefaultChatProviderId());
+        Generation current = generation.get();
+        return chatClient(current, resolveDefaultChatProviderId(current));
     }
 
     /**
@@ -122,7 +118,8 @@ public class LlmProviderRegistry {
      * 与 {@link #getDefaultChatClient()} 的区别在于不挂 Skill 工具与记忆 Advisor，避免无关上下文干扰。
      */
     public ChatClient getPlainChatClient() {
-        return getPlainChatClient(resolveDefaultChatProviderId());
+        Generation current = generation.get();
+        return plainChatClient(current, resolveDefaultChatProviderId(current));
     }
 
     /**
@@ -130,7 +127,8 @@ public class LlmProviderRegistry {
      * the legacy "default" alias.
      */
     public ChatClient getChatClientOrDefault(String providerId) {
-        return getChatClient(resolveProviderId(providerId));
+        Generation current = generation.get();
+        return chatClient(current, resolveProviderId(current, providerId));
     }
 
     /**
@@ -138,8 +136,8 @@ public class LlmProviderRegistry {
      * 这些场景要求模型一次性返回可解析 JSON，不应混入工具调用消息。
      */
     public ChatClient getPlainChatClient(String providerId) {
-        String id = resolveProviderId(providerId);
-        return clientCache.computeIfAbsent(id + ":plain", key -> createPlainChatClient(id));
+        Generation current = generation.get();
+        return plainChatClient(current, resolveProviderId(current, providerId));
     }
 
     /**
@@ -147,35 +145,55 @@ public class LlmProviderRegistry {
      * 不加 Memory Advisor（语音面试手动管理对话历史）。
      */
     public ChatClient getVoiceChatClient(String providerId) {
-        String id = resolveProviderId(providerId);
-        return clientCache.computeIfAbsent(id + ":voice", key -> createVoiceChatClient(id));
+        Generation current = generation.get();
+        return voiceChatClient(current, resolveProviderId(current, providerId));
     }
 
     /**
-     * 清空缓存，重新加载所有 provider。
+     * 切换到新一代缓存。正在执行的请求仍写回它们开始时拿到的那一代，不会混入新一代。
      */
     public void reload() {
-        int size = clientCache.size() + chatModelCache.size() + embeddingModelCache.size();
-        clientCache.clear();
-        chatModelCache.clear();
-        embeddingModelCache.clear();
-        cachedDefaultChatProviderId = null;
+        Generation previous = generation.getAndSet(new Generation());
+        int size = previous.clients.size() + previous.chatModels.size() + previous.embeddingModels.size();
         log.info("[LlmProviderRegistry] Cache cleared ({} entries). Next access will re-create clients.", size);
     }
 
     public EmbeddingModel getEmbeddingModel(String providerId) {
-        return embeddingModelCache.computeIfAbsent(providerId, id -> {
+        Generation current = generation.get();
+        return embeddingModel(current, providerId);
+    }
+
+    public EmbeddingModel getDefaultEmbeddingModel() {
+        Generation current = generation.get();
+        return embeddingModel(current, resolveDefaultEmbeddingProviderId());
+    }
+
+    private ChatClient chatClient(Generation current, String providerId) {
+        return current.clients.computeIfAbsent(providerId, id -> {
+            log.info("[LlmProviderRegistry] Creating new client for provider: {}", id);
+            return createChatClient(current, id);
+        });
+    }
+
+    private ChatClient plainChatClient(Generation current, String providerId) {
+        return current.clients.computeIfAbsent(
+            providerId + ":plain", key -> createPlainChatClient(current, providerId));
+    }
+
+    private ChatClient voiceChatClient(Generation current, String providerId) {
+        return current.clients.computeIfAbsent(
+            providerId + ":voice", key -> createVoiceChatClient(current, providerId));
+    }
+
+    private EmbeddingModel embeddingModel(Generation current, String providerId) {
+        return current.embeddingModels.computeIfAbsent(providerId, id -> {
             log.info("[LlmProviderRegistry] Creating new embedding model for provider: {}", id);
             return createEmbeddingModel(id);
         });
     }
 
-    public EmbeddingModel getDefaultEmbeddingModel() {
-        return getEmbeddingModel(resolveDefaultEmbeddingProviderId());
-    }
-
-    private ChatClient createChatClient(String providerId) {
-        OpenAiChatModel chatModel = getChatModel(providerId);
+    private ChatClient createChatClient(Generation current, String providerId) {
+        OpenAiChatModel chatModel = getChatModel(current, providerId);
 
         ChatClient.Builder builder = ChatClient.builder(chatModel);
         if (interviewSkillsToolCallback != null) {
@@ -190,16 +208,16 @@ public class LlmProviderRegistry {
         return builder.build();
     }
 
-    private ChatClient createPlainChatClient(String providerId) {
-        OpenAiChatModel chatModel = getChatModel(providerId);
+    private ChatClient createPlainChatClient(Generation current, String providerId) {
+        OpenAiChatModel chatModel = getChatModel(current, providerId);
         ChatClient.Builder builder = ChatClient.builder(chatModel);
         buildSafeGuardAdvisor().ifPresent(advisor -> builder.defaultAdvisors(List.of(advisor)));
         log.info("[LlmProviderRegistry] Created plain ChatClient (no tools) for {}", providerId);
         return builder.build();
     }
 
-    private ChatClient createVoiceChatClient(String providerId) {
-        OpenAiChatModel chatModel = getChatModel(providerId);
+    private ChatClient createVoiceChatClient(Generation current, String providerId) {
+        OpenAiChatModel chatModel = getChatModel(current, providerId);
 
         ChatClient.Builder builder = ChatClient.builder(chatModel);
         if (interviewSkillsToolCallback != null) {
@@ -217,8 +235,8 @@ public class LlmProviderRegistry {
         return builder.build();
     }
 
-    private OpenAiChatModel getChatModel(String providerId) {
-        return chatModelCache.computeIfAbsent(providerId, id -> {
+    private OpenAiChatModel getChatModel(Generation current, String providerId) {
+        return current.chatModels.computeIfAbsent(providerId, id -> {
             log.info("[LlmProviderRegistry] Creating new ChatModel for provider: {}", id);
             return buildChatModel(id);
         });
@@ -331,18 +349,18 @@ public class LlmProviderRegistry {
         return Optional.of(advisor);
     }
 
-    private String resolveProviderId(String providerId) {
+    private String resolveProviderId(Generation current, String providerId) {
         if (providerId == null || providerId.isBlank() || "default".equalsIgnoreCase(providerId.trim())) {
-            return resolveDefaultChatProviderId();
+            return resolveDefaultChatProviderId(current);
         }
         return providerId;
     }
 
-    private String resolveDefaultChatProviderId() {
+    private String resolveDefaultChatProviderId(Generation current) {
         if (globalSettingRepository == null) {
             return properties.getDefaultProvider();
         }
-        String cachedId = cachedDefaultChatProviderId;
+        String cachedId = current.defaultChatProviderId;
         if (cachedId != null) {
             return cachedId;
         }
@@ -350,7 +368,7 @@ public class LlmProviderRegistry {
             .map(LlmGlobalSettingEntity::getDefaultChatProviderId)
             .filter(id -> !isBlank(id))
             .orElse(properties.getDefaultProvider());
-        cachedDefaultChatProviderId = resolved;
+        current.defaultChatProviderId = resolved;
         return resolved;
     }
 
@@ -426,6 +444,17 @@ public class LlmProviderRegistry {
             || lower.startsWith("moonshot")
             || lower.startsWith("qwen")
             || lower.startsWith("ernie");
+    }
+
+    /**
+     * 同一代缓存。ChatClient、ChatModel、EmbeddingModel 和默认 provider ID 一起切换，
+     * 避免 reload 分步清空时把上一代模型写进下一代客户端。
+     */
+    private static final class Generation {
+        private final Map<String, ChatClient> clients = new ConcurrentHashMap<>();
+        private final Map<String, OpenAiChatModel> chatModels = new ConcurrentHashMap<>();
+        private final Map<String, EmbeddingModel> embeddingModels = new ConcurrentHashMap<>();
+        private volatile String defaultChatProviderId;
     }
 
     private record ProviderSnapshot(
