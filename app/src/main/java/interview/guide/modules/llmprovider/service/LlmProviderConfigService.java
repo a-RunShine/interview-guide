@@ -1,7 +1,6 @@
 package interview.guide.modules.llmprovider.service;
 
 import interview.guide.common.ai.ApiPathResolver;
-import interview.guide.common.ai.LlmProviderRegistry;
 import interview.guide.common.config.LlmProviderProperties;
 import interview.guide.common.config.LlmProviderProperties.ProviderConfig;
 import interview.guide.common.exception.BusinessException;
@@ -15,6 +14,7 @@ import interview.guide.modules.llmprovider.dto.ProviderTestResult;
 import interview.guide.modules.llmprovider.dto.TtsConfigDTO;
 import interview.guide.modules.llmprovider.dto.TtsConfigRequest;
 import interview.guide.modules.llmprovider.dto.UpdateProviderRequest;
+import interview.guide.modules.llmprovider.event.LlmProviderCacheInvalidatedEvent;
 import interview.guide.modules.llmprovider.model.LlmGlobalSettingEntity;
 import interview.guide.modules.llmprovider.model.LlmProviderEntity;
 import interview.guide.modules.llmprovider.repository.LlmGlobalSettingRepository;
@@ -24,10 +24,11 @@ import interview.guide.modules.voiceinterview.service.QwenAsrService;
 import interview.guide.modules.voiceinterview.service.QwenTtsService;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
 import org.springframework.boot.http.client.HttpClientSettings;
 import org.springframework.boot.http.client.InetAddressFilter;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
@@ -58,7 +59,7 @@ import java.util.regex.Pattern;
 public class LlmProviderConfigService {
 
   private final LlmProviderProperties properties;
-  private final LlmProviderRegistry registry;
+  private final ApplicationEventPublisher eventPublisher;
   private final LlmProviderRepository providerRepository;
   private final LlmGlobalSettingRepository globalSettingRepository;
   private final ApiKeyEncryptionService encryptionService;
@@ -80,7 +81,7 @@ public class LlmProviderConfigService {
   @Autowired
   public LlmProviderConfigService(
       LlmProviderProperties properties,
-      LlmProviderRegistry registry,
+      ApplicationEventPublisher eventPublisher,
       LlmProviderRepository providerRepository,
       LlmGlobalSettingRepository globalSettingRepository,
       ApiKeyEncryptionService encryptionService,
@@ -88,7 +89,7 @@ public class LlmProviderConfigService {
       QwenAsrService asrService,
       QwenTtsService ttsService) {
     this.properties = properties;
-    this.registry = registry;
+    this.eventPublisher = eventPublisher;
     this.providerRepository = providerRepository;
     this.globalSettingRepository = globalSettingRepository;
     this.encryptionService = encryptionService;
@@ -101,11 +102,11 @@ public class LlmProviderConfigService {
 
   public LlmProviderConfigService(
       LlmProviderProperties properties,
-      LlmProviderRegistry registry,
+      ApplicationEventPublisher eventPublisher,
       VoiceInterviewProperties voiceProperties,
       QwenAsrService asrService,
       QwenTtsService ttsService) {
-    this(properties, registry, null, null, null, voiceProperties, asrService, ttsService);
+    this(properties, eventPublisher, null, null, null, voiceProperties, asrService, ttsService);
   }
 
   @PostConstruct
@@ -354,7 +355,7 @@ public class LlmProviderConfigService {
           .enabled(true)
           .builtin(false)
           .build());
-      registry.reload();
+      invalidateProviderCache();
       log.info("Created provider: id={}, baseUrl={}, model={}", providerId, baseUrl, model);
     } finally {
       rwLock.writeLock().unlock();
@@ -410,7 +411,7 @@ public class LlmProviderConfigService {
       }
 
       providerRepository.save(provider);
-      registry.reload();
+      invalidateProviderCache();
       log.info("Updated provider: id={}", id);
     } finally {
       rwLock.writeLock().unlock();
@@ -433,7 +434,7 @@ public class LlmProviderConfigService {
       getProviderEntityOrThrow(id);
 
       providerRepository.deleteById(id);
-      registry.reload();
+      invalidateProviderCache();
       log.info("Deleted provider: id={}", id);
     } finally {
       rwLock.writeLock().unlock();
@@ -456,7 +457,7 @@ public class LlmProviderConfigService {
       LlmGlobalSettingEntity setting = getGlobalSettingOrThrow();
       setting.setDefaultChatProviderId(providerId);
       globalSettingRepository.save(setting);
-      registry.reload();
+      invalidateProviderCache();
       log.info("Updated default provider: {}", providerId);
     } finally {
       rwLock.writeLock().unlock();
@@ -485,7 +486,7 @@ public class LlmProviderConfigService {
       LlmGlobalSettingEntity setting = getGlobalSettingOrThrow();
       setting.setDefaultEmbeddingProviderId(providerId);
       globalSettingRepository.save(setting);
-      registry.reload();
+      invalidateProviderCache();
       log.info("Updated default embedding provider: {}", providerId);
     } finally {
       rwLock.writeLock().unlock();
@@ -554,8 +555,12 @@ public class LlmProviderConfigService {
   }
 
   public void reloadProviders() {
-    registry.reload();
+    invalidateProviderCache();
     log.info("Manual provider reload triggered");
+  }
+
+  private void invalidateProviderCache() {
+    eventPublisher.publishEvent(new LlmProviderCacheInvalidatedEvent());
   }
 
   // ===== Internal helpers =====
@@ -602,7 +607,7 @@ public class LlmProviderConfigService {
     String envKey = toEnvKey(request.id());
     writeProviderToYaml(request.id(), config, envKey);
     writeEnvValue(envKey, request.apiKey());
-    registry.reload();
+    invalidateProviderCache();
   }
 
   private void updateProviderLegacy(String id, UpdateProviderRequest request) {
@@ -640,7 +645,7 @@ public class LlmProviderConfigService {
     }
 
     writeProviderToYaml(id, config, toEnvKey(id));
-    registry.reload();
+    invalidateProviderCache();
   }
 
   private void deleteProviderLegacy(String id) {
@@ -653,7 +658,7 @@ public class LlmProviderConfigService {
     String envKey = toEnvKey(id);
     removeProviderFromYaml(id);
     removeFromEnv(envKey);
-    registry.reload();
+    invalidateProviderCache();
   }
 
   private void updateDefaultProviderLegacy(DefaultProviderDTO request) {
@@ -664,7 +669,7 @@ public class LlmProviderConfigService {
     getLegacyProviderConfigOrThrow(providerId);
     properties.setDefaultProvider(providerId);
     writeDefaultProviderToYaml(providerId);
-    registry.reload();
+    invalidateProviderCache();
   }
 
   private ProviderRuntimeConfig toRuntimeConfig(ProviderConfig config) {
