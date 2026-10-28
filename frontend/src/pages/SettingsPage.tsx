@@ -4,13 +4,23 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Settings, Plus, Trash2, Plug, CheckCircle, XCircle,
   Loader2, Eye, EyeOff, RefreshCw, Server, Edit2, Mic, Volume2, ChevronDown, Database,
+  ShieldCheck, AlertTriangle, Clock,
 } from 'lucide-react';
 import { llmProviderApi } from '../api/llmProvider';
 import ConfirmDialog from '../components/ConfirmDialog';
 import type {
   ProviderItem, CreateProviderRequest, UpdateProviderRequest,
   ProviderTestResult, AsrConfig, TtsConfig, AsrConfigRequest, TtsConfigRequest,
+  LlmProviderCacheStatus,
 } from '../types/llmProvider';
+import {
+  formatGraceRemaining,
+  getCacheStatusPresentation,
+  getReloadNotice,
+  shouldPollCacheStatus,
+} from './llmProviderCacheStatus';
+import type { CacheStatusTone } from './llmProviderCacheStatus';
+import { formatDateTime } from '../utils/date';
 
 // Provider 预设：已知 Provider 的 Base URL、推荐模型和向量模型
 const PROVIDER_PRESETS: Record<string, {
@@ -117,6 +127,31 @@ function StatusBadge({ icon, children }: StatusBadgeProps) {
   );
 }
 
+const CACHE_TONE_CLASS: Record<CacheStatusTone, string> = {
+  success: 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:ring-emerald-800',
+  refreshing: 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-900/25 dark:text-blue-300 dark:ring-blue-800',
+  warning: 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-800',
+  error: 'bg-red-50 text-red-700 ring-red-200 dark:bg-red-900/25 dark:text-red-300 dark:ring-red-800',
+  neutral: 'bg-slate-100 text-slate-600 ring-slate-200 dark:bg-slate-700/40 dark:text-slate-300 dark:ring-slate-600',
+};
+
+const CACHE_TONE_ICON: Record<CacheStatusTone, ReactNode> = {
+  success: <ShieldCheck className="h-3 w-3" />,
+  refreshing: <Loader2 className="h-3 w-3 animate-spin" />,
+  warning: <AlertTriangle className="h-3 w-3" />,
+  error: <XCircle className="h-3 w-3" />,
+  neutral: <Clock className="h-3 w-3" />,
+};
+
+function CacheStatusBadge({ tone, label }: { tone: CacheStatusTone; label: string }) {
+  return (
+    <span className={`inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold ring-1 ${CACHE_TONE_CLASS[tone]}`}>
+      {CACHE_TONE_ICON[tone]}
+      {label}
+    </span>
+  );
+}
+
 function ConfigRow({ label, value, title, monospace = false, emphasis = false }: ConfigRowProps) {
   return (
     <div
@@ -142,6 +177,12 @@ export default function SettingsPage() {
   const [defaultProviderId, setDefaultProviderId] = useState('');
   const [defaultEmbeddingProviderId, setDefaultEmbeddingProviderId] = useState('');
   const [loading, setLoading] = useState(true);
+
+  // Cache status state
+  const [cacheStatus, setCacheStatus] = useState<LlmProviderCacheStatus | null>(null);
+  const [cacheStatusError, setCacheStatusError] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
+  const [reloadNotice, setReloadNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
 
   // Modal state
   const [showModal, setShowModal] = useState(false);
@@ -236,6 +277,49 @@ export default function SettingsPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const loadCacheStatus = useCallback(async () => {
+    try {
+      const status = await llmProviderApi.getCacheStatus();
+      setCacheStatus(status);
+      setCacheStatusError(null);
+    } catch (err) {
+      console.error('Failed to load cache status:', err);
+      setCacheStatusError(err instanceof Error ? err.message : '缓存状态读取失败');
+    }
+  }, []);
+
+  useEffect(() => {
+    loadCacheStatus();
+  }, [loadCacheStatus]);
+
+  // 刷新中与宽限中的状态会自己变化，按固定间隔轮询；其他状态等用户操作。
+  useEffect(() => {
+    if (!shouldPollCacheStatus(cacheStatus?.state)) return;
+    const timer = window.setInterval(() => {
+      loadCacheStatus();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [cacheStatus?.state, loadCacheStatus]);
+
+  const handleReload = async () => {
+    setReloading(true);
+    setReloadNotice(null);
+    try {
+      const result = await llmProviderApi.reload();
+      setReloadNotice(getReloadNotice(result));
+    } catch (err) {
+      // 网络层失败拿不到 retryable，统一按"需要手动再试"提示。
+      setReloadNotice(getReloadNotice({
+        success: false,
+        failureReason: err instanceof Error ? err.message : null,
+        retryable: false,
+      }));
+    } finally {
+      setReloading(false);
+      await loadCacheStatus();
+    }
+  };
 
   // --- Modal helpers ---
   const openCreateModal = () => {
@@ -540,6 +624,15 @@ export default function SettingsPage() {
   };
 
   // --- Render ---
+  const cachePresentation = cacheStatusError
+    ? { label: '状态未知', tone: 'neutral' as CacheStatusTone, description: cacheStatusError }
+    : getCacheStatusPresentation(cacheStatus?.state);
+  const cacheGrace = formatGraceRemaining(cacheStatus?.graceSecondsRemaining);
+  const cacheFailureReason = cacheStatus?.lastFailureReason?.trim();
+  const showCacheFailure = !!cacheFailureReason
+    && cacheStatus?.state !== 'READY'
+    && cacheStatus?.state !== 'REFRESHING';
+
   return (
     <div className="max-w-4xl mx-auto">
       {/* Page header */}
@@ -585,6 +678,70 @@ export default function SettingsPage() {
                   <Plus className="w-4 h-4" />
                   新增 Provider
                 </motion.button>
+              </div>
+
+              {/* Cache status */}
+              <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-slate-800 dark:text-white">配置缓存</h3>
+                      <CacheStatusBadge tone={cachePresentation.tone} label={cachePresentation.label} />
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {cachePresentation.description}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleReload}
+                    disabled={reloading}
+                    className={`${ACTION_BUTTON_CLASS} border border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700`}
+                    title="重新读取并校验数据库中的 Provider 配置"
+                  >
+                    {reloading
+                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      : <RefreshCw className="h-3.5 w-3.5" />
+                    }
+                    {reloading ? '正在刷新…' : '手动刷新'}
+                  </button>
+                </div>
+
+                <dl className="mt-3 space-y-1 text-xs text-slate-500 dark:text-slate-400">
+                  <div className="flex flex-wrap items-center gap-x-2">
+                    <dt>最近成功</dt>
+                    <dd className="font-medium text-slate-700 dark:text-slate-200">
+                      {formatDateTime(cacheStatus?.lastSuccessAt)}
+                    </dd>
+                  </div>
+                  {cacheGrace && (
+                    <div className="flex flex-wrap items-center gap-x-2 text-amber-700 dark:text-amber-300">
+                      <dt>宽限剩余</dt>
+                      <dd className="font-semibold">{cacheGrace}</dd>
+                    </div>
+                  )}
+                  {showCacheFailure && (
+                    <div className="flex items-start gap-x-2 text-red-700 dark:text-red-300">
+                      <dt className="flex-shrink-0">最近失败</dt>
+                      <dd className="min-w-0 break-words font-medium">{cacheFailureReason}</dd>
+                    </div>
+                  )}
+                </dl>
+
+                {reloadNotice && (
+                  <div
+                    className={`mt-3 flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-medium ${
+                      reloadNotice.tone === 'success'
+                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
+                        : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'
+                    }`}
+                  >
+                    {reloadNotice.tone === 'success'
+                      ? <CheckCircle className="mt-px h-3.5 w-3.5 flex-shrink-0" />
+                      : <XCircle className="mt-px h-3.5 w-3.5 flex-shrink-0" />
+                    }
+                    <span className="min-w-0 break-words">{reloadNotice.text}</span>
+                  </div>
+                )}
               </div>
 
               {/* Provider grid */}
