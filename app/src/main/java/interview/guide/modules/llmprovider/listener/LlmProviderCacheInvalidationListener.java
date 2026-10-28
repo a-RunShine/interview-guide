@@ -22,6 +22,6 @@ public class LlmProviderCacheInvalidationListener {
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
   public void onInvalidated(LlmProviderCacheInvalidatedEvent event) {
     log.debug("Reloading LLM provider cache after {}", event);
-    registry.reload();
+    registry.refresh();
   }
 }

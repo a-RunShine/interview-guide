@@ -49,10 +49,10 @@ class LlmProviderCacheInvalidationListenerTest {
   void reloadsAfterCommit() {
     new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
       eventPublisher.publishEvent(new LlmProviderCacheInvalidatedEvent());
-      verify(registry, never()).reload();
+      verify(registry, never()).refresh();
     });
 
-    verify(registry).reload();
+    verify(registry).refresh();
   }
 
   @Test
@@ -65,7 +65,7 @@ class LlmProviderCacheInvalidationListenerTest {
       throw new IllegalStateException("rollback");
     }));
 
-    verify(registry, never()).reload();
+    verify(registry, never()).refresh();
   }
 
   @Test
@@ -73,7 +73,7 @@ class LlmProviderCacheInvalidationListenerTest {
   void reloadsImmediatelyWithoutTransaction() {
     eventPublisher.publishEvent(new LlmProviderCacheInvalidatedEvent());
 
-    verify(registry).reload();
+    verify(registry).refresh();
   }
 
   @Configuration

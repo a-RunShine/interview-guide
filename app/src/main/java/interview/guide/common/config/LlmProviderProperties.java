@@ -4,6 +4,7 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -19,6 +20,8 @@ public class LlmProviderProperties {
     private String configYamlPath;
     private String configEnvPath;
     private SecurityConfig security = new SecurityConfig();
+    /** 刷新失败后继续使用旧配置的宽限时长，默认 60 秒。 */
+    private Duration refreshGraceDuration = Duration.ofSeconds(60);
 
     @Data
     public static class ProviderConfig {
