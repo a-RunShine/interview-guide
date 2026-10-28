@@ -1,16 +1,20 @@
 package interview.guide.modules.llmprovider.controller;
 
 import interview.guide.common.annotation.RateLimit;
+import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.result.Result;
 import interview.guide.modules.llmprovider.dto.AsrConfigDTO;
 import interview.guide.modules.llmprovider.dto.AsrConfigRequest;
 import interview.guide.modules.llmprovider.dto.CreateProviderRequest;
 import interview.guide.modules.llmprovider.dto.DefaultProviderDTO;
+import interview.guide.modules.llmprovider.dto.LlmProviderCacheStatusResponse;
+import interview.guide.modules.llmprovider.dto.LlmProviderReloadResponse;
 import interview.guide.modules.llmprovider.dto.ProviderDTO;
 import interview.guide.modules.llmprovider.dto.ProviderTestResult;
 import interview.guide.modules.llmprovider.dto.TtsConfigDTO;
 import interview.guide.modules.llmprovider.dto.TtsConfigRequest;
 import interview.guide.modules.llmprovider.dto.UpdateProviderRequest;
+import interview.guide.modules.llmprovider.service.LlmProviderCacheService;
 import interview.guide.modules.llmprovider.service.LlmProviderConfigService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +37,7 @@ import java.util.List;
 public class LlmProviderController {
 
   private final LlmProviderConfigService configService;
+  private final LlmProviderCacheService cacheService;
 
   @GetMapping("/list")
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
@@ -74,11 +79,26 @@ public class LlmProviderController {
     return Result.success(configService.testProvider(id));
   }
 
+  /**
+   * 手动刷新缓存：同步尝试验证并切换。
+   *
+   * <p>刷新失败是配置问题的正常结果，不是服务端崩溃，因此按 {@code Result.error} 约定
+   * 返回错误码 + 失败原因（HTTP 200），宽限期内的旧一代继续服务。
+   */
   @PostMapping("/reload")
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 5)
-  public Result<Void> reloadProviders() {
-    configService.reloadProviders();
-    return Result.success();
+  public Result<LlmProviderReloadResponse> reloadProviders() {
+    LlmProviderReloadResponse response = cacheService.reloadProviders();
+    if (!response.success()) {
+      return Result.error(ErrorCode.PROVIDER_CONFIG_READ_FAILED, response.failureReason());
+    }
+    return Result.success(response);
+  }
+
+  @GetMapping("/cache-status")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+  public Result<LlmProviderCacheStatusResponse> getCacheStatus() {
+    return Result.success(cacheService.cacheStatus());
   }
 
   @GetMapping("/default-provider")

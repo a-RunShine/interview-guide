@@ -554,11 +554,6 @@ public class LlmProviderConfigService {
     }
   }
 
-  public void reloadProviders() {
-    invalidateProviderCache();
-    log.info("Manual provider reload triggered");
-  }
-
   private void invalidateProviderCache() {
     eventPublisher.publishEvent(new LlmProviderCacheInvalidatedEvent());
   }
