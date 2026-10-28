@@ -1,5 +1,6 @@
 package interview.guide.modules.llmprovider.listener;
 
+import interview.guide.common.ai.LlmProviderRefreshRetrier;
 import interview.guide.common.ai.LlmProviderRegistry;
 import interview.guide.modules.llmprovider.event.LlmProviderCacheInvalidatedEvent;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,11 +21,14 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @SpringJUnitConfig(LlmProviderCacheInvalidationListenerTest.TestConfig.class)
 @DisplayName("LlmProvider 缓存失效监听器")
@@ -39,9 +43,12 @@ class LlmProviderCacheInvalidationListenerTest {
   @Autowired
   private LlmProviderRegistry registry;
 
+  @Autowired
+  private LlmProviderRefreshRetrier retrier;
+
   @BeforeEach
-  void resetRegistry() {
-    reset(registry);
+  void resetCollaborators() {
+    reset(registry, retrier);
   }
 
   @Test
@@ -76,6 +83,44 @@ class LlmProviderCacheInvalidationListenerTest {
     verify(registry).refresh();
   }
 
+  @Test
+  @DisplayName("registry 抛出 RuntimeException 时不冒到提交方")
+  void doesNotPropagateRuntimeExceptionToCommitter() {
+    when(registry.refresh()).thenThrow(new IllegalStateException("refresh blew up"));
+
+    assertDoesNotThrow(() -> new TransactionTemplate(transactionManager)
+        .executeWithoutResult(status ->
+            eventPublisher.publishEvent(new LlmProviderCacheInvalidatedEvent())));
+
+    verify(registry).refresh();
+    verify(retrier, never()).onRefreshResult(any());
+  }
+
+  @Test
+  @DisplayName("registry 抛出 Error 时也不冒到提交方")
+  void doesNotPropagateErrorToCommitter() {
+    when(registry.refresh()).thenThrow(new AssertionError("unexpected error"));
+
+    assertDoesNotThrow(() -> new TransactionTemplate(transactionManager)
+        .executeWithoutResult(status ->
+            eventPublisher.publishEvent(new LlmProviderCacheInvalidatedEvent())));
+
+    verify(registry).refresh();
+    verify(retrier, never()).onRefreshResult(any());
+  }
+
+  @Test
+  @DisplayName("刷新结果交给重试调度器，由它决定是否重试")
+  void handsRefreshResultToRetrier() {
+    LlmProviderRegistry.RefreshResult failure =
+        new LlmProviderRegistry.RefreshResult(false, null, "read timed out", true);
+    when(registry.refresh()).thenReturn(failure);
+
+    eventPublisher.publishEvent(new LlmProviderCacheInvalidatedEvent());
+
+    verify(retrier).onRefreshResult(failure);
+  }
+
   @Configuration
   @EnableTransactionManagement
   static class TestConfig {
@@ -86,8 +131,14 @@ class LlmProviderCacheInvalidationListenerTest {
     }
 
     @Bean
-    LlmProviderCacheInvalidationListener listener(LlmProviderRegistry registry) {
-      return new LlmProviderCacheInvalidationListener(registry);
+    LlmProviderRefreshRetrier retrier() {
+      return mock(LlmProviderRefreshRetrier.class);
+    }
+
+    @Bean
+    LlmProviderCacheInvalidationListener listener(
+        LlmProviderRegistry registry, LlmProviderRefreshRetrier retrier) {
+      return new LlmProviderCacheInvalidationListener(registry, retrier);
     }
 
     @Bean(destroyMethod = "shutdown")

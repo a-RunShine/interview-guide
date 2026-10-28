@@ -245,6 +245,25 @@ public class LlmProviderRegistry {
     }
 
     /**
+     * 重试次数耗尽时提前结束宽限：把宽限截止时间收拢到当前时刻，状态立即变为
+     * {@link CacheState#EXPIRED}，请求入口开始抛业务异常。
+     *
+     * <p>只在已经失败（存在宽限截止时间）时生效，避免把从未失败过的缓存放进 EXPIRED。
+     * 之后任意一次成功的 {@link #refresh()} 仍会把状态带回 {@link CacheState#READY}。
+     */
+    public void markGraceExpired() {
+      Instant now = clock.instant();
+      Instant deadline = graceDeadline.updateAndGet(
+          existing -> existing == null ? null : now);
+      if (deadline == null) {
+        log.warn("[LlmProviderRegistry] Grace expiry requested without a pending failure, ignored");
+        return;
+      }
+      log.error("[LlmProviderRegistry] Grace exhausted, state={}, lastFailureReason={}",
+          CacheState.EXPIRED, lastFailureReason);
+    }
+
+    /**
      * 查询当前缓存状态：状态名、最近成功时间、最近失败原因、宽限剩余秒数、失败是否可重试。
      */
     public CacheStatus status() {

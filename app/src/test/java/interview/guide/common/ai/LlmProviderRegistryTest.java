@@ -577,6 +577,60 @@ class LlmProviderRegistryTest {
             assertEquals("a-60", modelOf(registry.getDefaultChatClient()));
         }
 
+        @Test
+        @DisplayName("重试次数耗尽后标记宽限已过，状态进入 EXPIRED 且请求抛业务异常")
+        void graceCanBeExpiredBeforeDeadline() {
+            when(providerRepository.findByEnabledTrueOrderByIdAsc())
+                .thenReturn(List.of(entity("p1", "model-v1")));
+            when(encryptionService.decrypt("nonce", "cipher")).thenReturn("key-1");
+            when(globalSettingRepository.findById(LlmGlobalSettingEntity.SINGLETON_ID))
+                .thenReturn(Optional.of(globalSetting("p1", "p1")));
+
+            MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+            LlmProviderRegistry registry = newRegistry(clock);
+            assertTrue(registry.refresh().success());
+
+            when(providerRepository.findByEnabledTrueOrderByIdAsc())
+                .thenThrow(new QueryTimeoutException("read timed out"));
+            clock.advance(Duration.ofSeconds(1));
+            assertFalse(registry.refresh().success());
+            assertEquals(LlmProviderRegistry.CacheState.STALE, registry.status().state());
+
+            // 重试耗尽：不等宽限自然到期，直接进入 EXPIRED
+            registry.markGraceExpired();
+
+            assertEquals(LlmProviderRegistry.CacheState.EXPIRED, registry.status().state());
+            assertEquals(0L, registry.status().graceSecondsRemaining());
+            BusinessException ex = assertThrows(
+                BusinessException.class, () -> registry.getChatClient("p1"));
+            assertEquals(ErrorCode.PROVIDER_UNAVAILABLE.getCode(), ex.getCode());
+
+            // 之后任意一次成功刷新仍能恢复
+            doReturn(List.of(entity("p1", "model-v2")))
+                .when(providerRepository).findByEnabledTrueOrderByIdAsc();
+            assertTrue(registry.refresh().success());
+            assertEquals(LlmProviderRegistry.CacheState.READY, registry.status().state());
+            assertEquals("model-v2", modelOf(registry.getChatClient("p1")));
+        }
+
+        @Test
+        @DisplayName("从未失败时标记宽限已过不会把缓存变成 EXPIRED")
+        void graceExpiryIgnoredWithoutFailure() {
+            when(providerRepository.findByEnabledTrueOrderByIdAsc())
+                .thenReturn(List.of(entity("p1", "model-v1")));
+            when(encryptionService.decrypt("nonce", "cipher")).thenReturn("key-1");
+            when(globalSettingRepository.findById(LlmGlobalSettingEntity.SINGLETON_ID))
+                .thenReturn(Optional.of(globalSetting("p1", "p1")));
+
+            LlmProviderRegistry registry = newRegistry();
+            assertTrue(registry.refresh().success());
+
+            registry.markGraceExpired();
+
+            assertEquals(LlmProviderRegistry.CacheState.READY, registry.status().state());
+            assertNotNull(registry.getChatClient("p1"));
+        }
+
         private LlmProviderRegistry newRegistry() {
             return newRegistry(Clock.systemUTC());
         }
