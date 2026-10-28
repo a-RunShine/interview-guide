@@ -36,8 +36,9 @@ class LlmProviderControllerCacheTest {
     @DisplayName("手动刷新成功时应返回新的构建时间")
     void shouldReturnBuiltAtWhenReloadSucceeds() {
         Instant builtAt = Instant.parse("2026-10-28T08:00:00Z");
-        when(cacheService.reloadProviders())
-            .thenReturn(new LlmProviderReloadResponse(true, builtAt, null, false));
+        Result<LlmProviderReloadResponse> serviceResult =
+            Result.success(new LlmProviderReloadResponse(true, builtAt, null, false));
+        when(cacheService.reloadProviders()).thenReturn(serviceResult);
 
         Result<LlmProviderReloadResponse> result = controller.reloadProviders();
 
@@ -48,17 +49,22 @@ class LlmProviderControllerCacheTest {
     }
 
     @Test
-    @DisplayName("手动刷新失败时应以业务错误返回失败原因而不是 500")
-    void shouldReturnFailureReasonWhenReloadFails() {
+    @DisplayName("手动刷新失败时透传 Service 的结果而不是自己编错误码")
+    void shouldDelegateFailureResultToService() {
         String reason = "Provider 'dashscope' 的 baseUrl 未配置";
-        when(cacheService.reloadProviders())
-            .thenReturn(new LlmProviderReloadResponse(false, null, reason, false));
+        LlmProviderReloadResponse failed = new LlmProviderReloadResponse(false, null, reason, true);
+        Result<LlmProviderReloadResponse> serviceResult =
+            Result.error(ErrorCode.PROVIDER_CONFIG_READ_FAILED, reason, failed);
+        when(cacheService.reloadProviders()).thenReturn(serviceResult);
 
         Result<LlmProviderReloadResponse> result = controller.reloadProviders();
 
         assertThat(result.getCode()).isEqualTo(ErrorCode.PROVIDER_CONFIG_READ_FAILED.getCode());
         assertThat(result.getMessage()).isEqualTo(reason);
-        assertThat(result.getData()).isNull();
+        assertThat(result.getData()).isSameAs(failed);
+        assertThat(result.getData().success()).isFalse();
+        assertThat(result.getData().retryable()).isTrue();
+        verify(cacheService).reloadProviders();
     }
 
     @Test

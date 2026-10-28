@@ -237,6 +237,21 @@ class LlmProviderRegistryMetricsTest {
     assertNotNull(errors.getFirst().getThrowableProxy(), "异常对象应作为最后一个参数传入");
   }
 
+  @Test
+  @DisplayName("兜底路径的意外异常也按可恢复/不可恢复计入失败指标")
+  void escapedFailureIsCounted() {
+    givenProviders(entity("p1", "model-v1"));
+    LlmProviderRegistry registry = newRegistry(meterRegistry);
+    assertTrue(registry.refresh().success());
+
+    assertDoesNotThrow(() -> registry.recordEscapedRefreshFailure(new IllegalStateException("boom")));
+    assertDoesNotThrow(() -> registry.recordEscapedRefreshFailure(
+        new QueryTimeoutException("read timed out")));
+
+    assertEquals(1.0, failureCount(NON_RECOVERABLE), "参数类异常应计入不可恢复");
+    assertEquals(1.0, failureCount(RECOVERABLE), "读库超时应计入可恢复");
+  }
+
   private LlmProviderRegistry newRegistry(MeterRegistry registry) {
     return new LlmProviderRegistry(
         properties,

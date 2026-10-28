@@ -1,7 +1,6 @@
 package interview.guide.modules.llmprovider.controller;
 
 import interview.guide.common.annotation.RateLimit;
-import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.result.Result;
 import interview.guide.modules.llmprovider.dto.AsrConfigDTO;
 import interview.guide.modules.llmprovider.dto.AsrConfigRequest;
@@ -82,17 +81,13 @@ public class LlmProviderController {
   /**
    * 手动刷新缓存：同步尝试验证并切换。
    *
-   * <p>刷新失败是配置问题的正常结果，不是服务端崩溃，因此按 {@code Result.error} 约定
-   * 返回错误码 + 失败原因（HTTP 200），宽限期内的旧一代继续服务。
+   * <p>成功 / 失败到 {@code Result} 的判定在 Service 里完成，这里只做委托。
+   * 失败仍是 HTTP 200，并且 {@code data} 里带回失败原因与真实的 {@code retryable}。
    */
   @PostMapping("/reload")
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 5)
   public Result<LlmProviderReloadResponse> reloadProviders() {
-    LlmProviderReloadResponse response = cacheService.reloadProviders();
-    if (!response.success()) {
-      return Result.error(ErrorCode.PROVIDER_CONFIG_READ_FAILED, response.failureReason());
-    }
-    return Result.success(response);
+    return cacheService.reloadProviders();
   }
 
   @GetMapping("/cache-status")

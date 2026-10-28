@@ -64,9 +64,6 @@ import java.util.concurrent.locks.ReentrantLock;
 @Slf4j
 public class LlmProviderRegistry {
 
-    /** 未配置时的宽限期兜底值，正常路径由 {@code app.ai.refresh-grace-duration} 提供。 */
-    private static final Duration DEFAULT_GRACE_DURATION = Duration.ofSeconds(60);
-
     /** 刷新失败计数，按失败类型分标签。运维告警规则依赖这个名字。 */
     private static final String METRIC_REFRESH_FAILURES = "app.ai.llm_provider.refresh.failures";
     /** 当前缓存状态，数值见 {@link #stateCode(CacheState)}。 */
@@ -81,7 +78,7 @@ public class LlmProviderRegistry {
     static final String FAILURE_TYPE_RETRY_EXHAUSTED = "retry_exhausted";
 
     private final LlmProviderProperties properties;
-    private final AtomicReference<Generation> generation = new AtomicReference<>(Generation.lazy());
+    private final AtomicReference<Generation> generation = new AtomicReference<>();
     private final AtomicReference<Instant> graceDeadline = new AtomicReference<>();
     private final ReentrantLock refreshLock = new ReentrantLock();
     private final LlmProviderRepository providerRepository;
@@ -168,6 +165,9 @@ public class LlmProviderRegistry {
         this.observationRegistry = observationRegistry;
         this.interviewSkillsToolCallback = interviewSkillsToolCallback;
         this.clock = clock != null ? clock : Clock.systemUTC();
+        // 懒加载的一代在构造时就带上构建时间：首次 refresh() 之前状态已经是 READY，
+        // 状态查询必须能给出时间戳，否则前端会显示"最新"却没有最近成功时间。
+        this.generation.set(Generation.lazy(this.clock.instant()));
         this.graceDuration = resolveGraceDuration(properties);
         this.meterRegistry = meterRegistry;
         registerCacheStateGauge();
@@ -185,7 +185,9 @@ public class LlmProviderRegistry {
     private static Duration resolveGraceDuration(LlmProviderProperties properties) {
         Duration configured = properties != null ? properties.getRefreshGraceDuration() : null;
         if (configured == null || configured.isNegative() || configured.isZero()) {
-            return DEFAULT_GRACE_DURATION;
+            // properties 未绑定（例如直接 new 出来的测试实例）时退回配置属性类自己声明的默认值，
+            // 60 秒只在 LlmProviderProperties 里出现一次。
+            return LlmProviderProperties.DEFAULT_REFRESH_GRACE_DURATION;
         }
         return configured;
     }
@@ -308,22 +310,22 @@ public class LlmProviderRegistry {
      * 之后任意一次成功的 {@link #refresh()} 仍会把状态带回 {@link CacheState#READY}。
      */
     public void markGraceExpired() {
-      Instant now = clock.instant();
-      Instant deadline = graceDeadline.updateAndGet(
-          existing -> existing == null ? null : now);
-      if (deadline == null) {
-        log.warn("[LlmProviderRegistry] Grace expiry requested without a pending failure, ignored");
-        return;
-      }
-      // 一次失败只算一次"重试耗尽"报警：重复调用不再重复计数
-      if (!graceExpiryCounted.compareAndSet(false, true)) {
-        log.debug("[LlmProviderRegistry] Grace already marked exhausted, skipping duplicate count");
-        return;
-      }
-      recordFailure(FAILURE_TYPE_RETRY_EXHAUSTED);
-      log.error("[LlmProviderRegistry] Grace exhausted, provider={}, failureType={}, state={}, "
-              + "graceRemainingMs=0, lastFailureReason={}",
-          failedProviderId, FAILURE_TYPE_RETRY_EXHAUSTED, CacheState.EXPIRED, lastFailureReason);
+        Instant now = clock.instant();
+        Instant deadline = graceDeadline.updateAndGet(
+            existing -> existing == null ? null : now);
+        if (deadline == null) {
+            log.warn("[LlmProviderRegistry] Grace expiry requested without a pending failure, ignored");
+            return;
+        }
+        // 一次失败只算一次"重试耗尽"报警：重复调用不再重复计数
+        if (!graceExpiryCounted.compareAndSet(false, true)) {
+            log.debug("[LlmProviderRegistry] Grace already marked exhausted, skipping duplicate count");
+            return;
+        }
+        recordFailure(FAILURE_TYPE_RETRY_EXHAUSTED);
+        log.error("[LlmProviderRegistry] Grace exhausted, provider={}, failureType={}, state={}, "
+                + "graceRemainingMs=0, lastFailureReason={}",
+            failedProviderId, FAILURE_TYPE_RETRY_EXHAUSTED, CacheState.EXPIRED, lastFailureReason);
     }
 
     /**
@@ -396,6 +398,22 @@ public class LlmProviderRegistry {
             return;
         }
         meterRegistry.counter(METRIC_REFRESH_FAILURES, TAG_FAILURE_TYPE, failureType).increment();
+    }
+
+    /**
+     * 刷新入口之外的兜底路径（监听器捕获到的 Throwable）也要计入失败指标，
+     * 否则"只记日志和指标"的保证只兑现了一半。
+     *
+     * <p>沿用已有的失败类型词汇（recoverable / non_recoverable），不引入新的标签值，
+     * 现有告警规则不需要改动就能覆盖这条路径。
+     */
+    public void recordEscapedRefreshFailure(Throwable failure) {
+        String failureType = FailureClassifier.isRetryable(failure)
+            ? FAILURE_TYPE_RECOVERABLE
+            : FAILURE_TYPE_NON_RECOVERABLE;
+        recordFailure(failureType);
+        log.error("[LlmProviderRegistry] Refresh aborted with an escaped throwable, failureType={}",
+            failureType, failure);
     }
 
     /**
@@ -940,8 +958,8 @@ public class LlmProviderRegistry {
             this.builtAt = builtAt;
         }
 
-        private static Generation lazy() {
-            return new Generation(null, null, null, null);
+        private static Generation lazy(Instant builtAt) {
+            return new Generation(null, null, null, builtAt);
         }
 
         private static Generation validated(

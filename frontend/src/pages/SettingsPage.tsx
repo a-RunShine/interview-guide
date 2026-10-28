@@ -293,6 +293,15 @@ export default function SettingsPage() {
     loadCacheStatus();
   }, [loadCacheStatus]);
 
+  /**
+   * Provider 的保存 / 删除 / 切换默认都会触发服务端缓存重建，
+   * 状态徽标必须跟着刷新；否则保存了一份坏配置后徽标仍显示"最新"，
+   * 要等重新打开页面才变成 STALE。
+   */
+  const refreshAfterMutation = useCallback(async () => {
+    await Promise.all([loadData(), loadCacheStatus()]);
+  }, [loadData, loadCacheStatus]);
+
   // 刷新中与宽限中的状态会自己变化，按固定间隔轮询；其他状态等用户操作。
   useEffect(() => {
     if (!shouldPollCacheStatus(cacheStatus?.state)) return;
@@ -389,7 +398,7 @@ export default function SettingsPage() {
       await llmProviderApi.create(data);
       showToast('Provider 创建成功');
       closeModal();
-      await loadData();
+      await refreshAfterMutation();
     } catch (err) {
       console.error('Failed to create provider:', err);
       showToast(err instanceof Error ? err.message : '创建失败', 'error');
@@ -434,7 +443,7 @@ export default function SettingsPage() {
       await llmProviderApi.update(editingProvider.id, data);
       showToast('Provider 更新成功');
       closeModal();
-      await loadData();
+      await refreshAfterMutation();
     } catch (err) {
       console.error('Failed to update provider:', err);
       showToast(err instanceof Error ? err.message : '更新失败', 'error');
@@ -450,7 +459,7 @@ export default function SettingsPage() {
       await llmProviderApi.delete(deleteConfirmId);
       showToast('Provider 已删除');
       setDeleteConfirmId(null);
-      await loadData();
+      await refreshAfterMutation();
     } catch (err) {
       console.error('Failed to delete provider:', err);
       showToast(err instanceof Error ? err.message : '删除失败', 'error');
@@ -500,7 +509,7 @@ export default function SettingsPage() {
       });
       showToast(`已将 "${pendingDefaultProviderId}" 设为默认聊天服务`);
       setPendingDefaultProviderId(null);
-      await loadData();
+      await refreshAfterMutation();
     } catch (err) {
       console.error('Failed to set default:', err);
       showToast(err instanceof Error ? err.message : '设置默认 Provider 失败', 'error');
@@ -529,7 +538,7 @@ export default function SettingsPage() {
       });
       showToast(`已将 "${pendingDefaultEmbeddingProviderId}" 的 ${pendingEmbeddingProvider?.embeddingModel ?? '向量模型'} (${pendingEmbeddingProvider?.embeddingDimensions ?? 1024}维) 设为默认向量服务`);
       setPendingDefaultEmbeddingProviderId(null);
-      await loadData();
+      await refreshAfterMutation();
     } catch (err) {
       console.error('Failed to set embedding default:', err);
       showToast(err instanceof Error ? err.message : '设置默认向量 Provider 失败', 'error');

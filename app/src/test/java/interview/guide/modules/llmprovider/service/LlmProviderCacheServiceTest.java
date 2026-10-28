@@ -1,10 +1,12 @@
 package interview.guide.modules.llmprovider.service;
 
-import interview.guide.common.ai.LlmProviderRefreshRetrier;
+import interview.guide.common.ai.LlmProviderCacheRefresher;
 import interview.guide.common.ai.LlmProviderRegistry;
 import interview.guide.common.ai.LlmProviderRegistry.CacheState;
 import interview.guide.common.ai.LlmProviderRegistry.CacheStatus;
 import interview.guide.common.ai.LlmProviderRegistry.RefreshResult;
+import interview.guide.common.exception.ErrorCode;
+import interview.guide.common.result.Result;
 import interview.guide.modules.llmprovider.dto.LlmProviderCacheStatusResponse;
 import interview.guide.modules.llmprovider.dto.LlmProviderReloadResponse;
 import org.junit.jupiter.api.DisplayName;
@@ -25,10 +27,10 @@ import static org.mockito.Mockito.when;
 class LlmProviderCacheServiceTest {
 
     @Mock
-    private LlmProviderRegistry registry;
+    private LlmProviderCacheRefresher refresher;
 
     @Mock
-    private LlmProviderRefreshRetrier retrier;
+    private LlmProviderRegistry registry;
 
     @InjectMocks
     private LlmProviderCacheService cacheService;
@@ -38,40 +40,47 @@ class LlmProviderCacheServiceTest {
     void shouldReturnSuccessAndStopRetries() {
         Instant builtAt = Instant.parse("2026-10-28T08:00:00Z");
         RefreshResult refreshed = new RefreshResult(true, builtAt, null, false);
-        when(registry.refresh()).thenReturn(refreshed);
+        when(refresher.refreshAndScheduleRetry()).thenReturn(refreshed);
 
-        LlmProviderReloadResponse response = cacheService.reloadProviders();
+        Result<LlmProviderReloadResponse> result = cacheService.reloadProviders();
 
-        assertThat(response.success()).isTrue();
-        assertThat(response.builtAt()).isEqualTo(builtAt);
-        assertThat(response.failureReason()).isNull();
-        verify(retrier).onRefreshResult(refreshed);
+        assertThat(result.getCode()).isEqualTo(200);
+        assertThat(result.getData().success()).isTrue();
+        assertThat(result.getData().builtAt()).isEqualTo(builtAt);
+        assertThat(result.getData().failureReason()).isNull();
+        verify(refresher).refreshAndScheduleRetry();
     }
 
     @Test
-    @DisplayName("手动刷新失败时返回失败原因并保持原缓存")
+    @DisplayName("手动刷新失败时仍带回失败数据和真实的 retryable")
     void shouldReturnFailureReasonAndKeepOldCache() {
         RefreshResult refreshed = new RefreshResult(false, null, "读取 Provider 配置失败", true);
-        when(registry.refresh()).thenReturn(refreshed);
+        when(refresher.refreshAndScheduleRetry()).thenReturn(refreshed);
 
-        LlmProviderReloadResponse response = cacheService.reloadProviders();
+        Result<LlmProviderReloadResponse> result = cacheService.reloadProviders();
 
-        assertThat(response.success()).isFalse();
-        assertThat(response.builtAt()).isNull();
-        assertThat(response.failureReason()).isEqualTo("读取 Provider 配置失败");
-        assertThat(response.retryable()).isTrue();
-        verify(retrier).onRefreshResult(refreshed);
+        assertThat(result.getCode()).isEqualTo(ErrorCode.PROVIDER_CONFIG_READ_FAILED.getCode());
+        assertThat(result.getMessage()).isEqualTo("读取 Provider 配置失败");
+        assertThat(result.getData()).isNotNull();
+        assertThat(result.getData().success()).isFalse();
+        assertThat(result.getData().builtAt()).isNull();
+        assertThat(result.getData().failureReason()).isEqualTo("读取 Provider 配置失败");
+        assertThat(result.getData().retryable()).isTrue();
+        verify(refresher).refreshAndScheduleRetry();
     }
 
     @Test
     @DisplayName("刷新失败但没有原因时补一个可展示的默认文案")
     void shouldDefaultFailureReasonWhenRegistryReturnsNone() {
-        when(registry.refresh()).thenReturn(new RefreshResult(false, null, null, true));
+        when(refresher.refreshAndScheduleRetry())
+            .thenReturn(new RefreshResult(false, null, null, true));
 
-        LlmProviderReloadResponse response = cacheService.reloadProviders();
+        Result<LlmProviderReloadResponse> result = cacheService.reloadProviders();
 
-        assertThat(response.success()).isFalse();
-        assertThat(response.failureReason()).isEqualTo("LLM Provider 缓存刷新失败，原因未知");
+        assertThat(result.getData().success()).isFalse();
+        assertThat(result.getData().failureReason())
+            .isEqualTo("LLM Provider 缓存刷新失败，原因未知");
+        assertThat(result.getData().retryable()).isTrue();
     }
 
     @Test

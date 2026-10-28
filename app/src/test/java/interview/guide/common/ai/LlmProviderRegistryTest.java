@@ -631,6 +631,37 @@ class LlmProviderRegistryTest {
             assertNotNull(registry.getChatClient("p1"));
         }
 
+        @Test
+        @DisplayName("首次 refresh 之前状态已是 READY，并且带有构建时间")
+        void statusHasBuiltAtBeforeFirstRefresh() {
+            MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+            LlmProviderRegistry registry = newRegistry(clock);
+
+            LlmProviderRegistry.CacheStatus ready = registry.status();
+
+            assertEquals("READY", ready.stateName());
+            assertEquals(Instant.parse("2026-01-01T00:00:00Z"), ready.lastSuccessAt(),
+                "READY 状态下必须能给出最近成功时间");
+            assertNull(ready.lastFailureReason());
+        }
+
+        @Test
+        @DisplayName("宽限时长为空时退回配置属性类的默认值，Registry 不再自带 60 秒常量")
+        void graceDurationFallsBackToPropertiesDefault() {
+            when(providerRepository.findByEnabledTrueOrderByIdAsc())
+                .thenThrow(new QueryTimeoutException("read timed out"));
+            when(properties.getRefreshGraceDuration()).thenReturn(null);
+
+            MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+            LlmProviderRegistry registry = newRegistry(clock);
+
+            assertFalse(registry.refresh().success());
+            assertEquals(
+                LlmProviderProperties.DEFAULT_REFRESH_GRACE_DURATION.toSeconds(),
+                registry.status().graceSecondsRemaining(),
+                "兜底值来自 LlmProviderProperties，只应有一份");
+        }
+
         private LlmProviderRegistry newRegistry() {
             return newRegistry(Clock.systemUTC());
         }

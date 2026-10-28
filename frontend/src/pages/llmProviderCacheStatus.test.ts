@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { toReloadResult } from '../api/llmProviderReload.ts';
 import {
   formatGraceRemaining,
   getCacheStatusPresentation,
@@ -81,4 +82,55 @@ test('只有刷新中或宽限中才需要轮询状态', () => {
   assert.equal(shouldPollCacheStatus('READY'), false);
   assert.equal(shouldPollCacheStatus('EXPIRED'), false);
   assert.equal(shouldPollCacheStatus(null), false);
+});
+
+test('手动刷新失败时仍能从 Result.error 的 data 里读到真实的 retryable', () => {
+  const failed = toReloadResult({
+    code: 11004,
+    message: '服务商 dashscope 密钥解密失败',
+    data: {
+      success: false,
+      builtAt: null,
+      failureReason: '服务商 dashscope 密钥解密失败',
+      retryable: true,
+    },
+  });
+
+  assert.deepEqual(failed, {
+    success: false,
+    builtAt: null,
+    failureReason: '服务商 dashscope 密钥解密失败',
+    retryable: true,
+  });
+  // 真实的 retryable 能一路走到提示文案里，而不是被硬编码成 false
+  assert.deepEqual(getReloadNotice(failed), {
+    tone: 'error',
+    text: '刷新失败：服务商 dashscope 密钥解密失败（系统会自动重试）',
+  });
+});
+
+test('手动刷新成功时保留构建时间', () => {
+  const succeeded = toReloadResult({
+    code: 200,
+    message: 'success',
+    data: { success: true, builtAt: '2026-10-28T08:00:00Z', failureReason: null, retryable: false },
+  });
+
+  assert.equal(succeeded.success, true);
+  assert.equal(succeeded.builtAt, '2026-10-28T08:00:00Z');
+});
+
+test('响应里完全没有 data 时才退回失败 + 不可重试的兜底值', () => {
+  assert.deepEqual(toReloadResult({ code: 500, message: '网络异常', data: null }), {
+    success: false,
+    builtAt: null,
+    failureReason: '网络异常',
+    retryable: false,
+  });
+  assert.deepEqual(toReloadResult(null), {
+    success: false,
+    builtAt: null,
+    failureReason: null,
+    retryable: false,
+  });
 });

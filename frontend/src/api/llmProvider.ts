@@ -1,5 +1,6 @@
-import request, { isResult } from './request';
+import request from './request';
 import type { Result } from './request';
+import { toReloadResult } from './llmProviderReload';
 import type {
   ProviderItem,
   CreateProviderRequest,
@@ -34,8 +35,9 @@ export const llmProviderApi = {
   /**
    * 手动刷新：后端同步校验并返回真实结果。
    *
-   * 失败也走 `Result.error`（HTTP 200），统一拦截器会把 message 变成异常、丢掉 retryable，
-   * 所以这里跳过解包，把失败原因和可重试标记一起交给页面展示。
+   * 成功是 `Result.success`，失败是 `Result.error`（HTTP 200），但两条路径的 `data` 里都带
+   * `success` / `failureReason` / `retryable`。统一拦截器会把失败变成异常、丢掉 data，
+   * 所以这里跳过解包自己读；解析规则集中在 `toReloadResult`，便于单测覆盖。
    */
   reload: async (): Promise<LlmProviderReloadResult> => {
     const payload = await request.post<Result<LlmProviderReloadResult>>(
@@ -43,15 +45,7 @@ export const llmProviderApi = {
       undefined,
       { skipResultTransform: true },
     );
-    if (isResult(payload) && payload.code === 200 && payload.data) {
-      return payload.data;
-    }
-    return {
-      success: false,
-      builtAt: null,
-      failureReason: isResult(payload) ? payload.message : null,
-      retryable: false,
-    };
+    return toReloadResult(payload);
   },
 
   getCacheStatus: () =>

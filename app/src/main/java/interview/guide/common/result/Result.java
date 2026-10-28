@@ -51,6 +51,14 @@ public class Result<T> {
     public static <T> Result<T> error(ErrorCode errorCode, String message) {
         return new Result<>(errorCode.getCode(), message, null);
     }
+
+    /**
+     * 业务失败但仍需带回结构化数据的场景（例如"刷新失败"也要给出 failureReason / retryable）。
+     * HTTP 仍为 200，错误语义只体现在 {@code code} 上。
+     */
+    public static <T> Result<T> error(ErrorCode errorCode, String message, T data) {
+        return new Result<>(errorCode.getCode(), message, data);
+    }
     
     // ========== 辅助方法 ==========
     

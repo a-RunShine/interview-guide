@@ -1,5 +1,6 @@
 package interview.guide.modules.llmprovider.listener;
 
+import interview.guide.common.ai.LlmProviderCacheRefresher;
 import interview.guide.common.ai.LlmProviderRefreshRetrier;
 import interview.guide.common.ai.LlmProviderRegistry;
 import interview.guide.modules.llmprovider.event.LlmProviderCacheInvalidatedEvent;
@@ -84,9 +85,10 @@ class LlmProviderCacheInvalidationListenerTest {
   }
 
   @Test
-  @DisplayName("registry 抛出 RuntimeException 时不冒到提交方")
+  @DisplayName("registry 抛出 RuntimeException 时不冒到提交方，并计入失败指标")
   void doesNotPropagateRuntimeExceptionToCommitter() {
-    when(registry.refresh()).thenThrow(new IllegalStateException("refresh blew up"));
+    IllegalStateException failure = new IllegalStateException("refresh blew up");
+    when(registry.refresh()).thenThrow(failure);
 
     assertDoesNotThrow(() -> new TransactionTemplate(transactionManager)
         .executeWithoutResult(status ->
@@ -94,12 +96,14 @@ class LlmProviderCacheInvalidationListenerTest {
 
     verify(registry).refresh();
     verify(retrier, never()).onRefreshResult(any());
+    verify(registry).recordEscapedRefreshFailure(failure);
   }
 
   @Test
-  @DisplayName("registry 抛出 Error 时也不冒到提交方")
+  @DisplayName("registry 抛出 Error 时也不冒到提交方，并计入失败指标")
   void doesNotPropagateErrorToCommitter() {
-    when(registry.refresh()).thenThrow(new AssertionError("unexpected error"));
+    AssertionError failure = new AssertionError("unexpected error");
+    when(registry.refresh()).thenThrow(failure);
 
     assertDoesNotThrow(() -> new TransactionTemplate(transactionManager)
         .executeWithoutResult(status ->
@@ -107,6 +111,7 @@ class LlmProviderCacheInvalidationListenerTest {
 
     verify(registry).refresh();
     verify(retrier, never()).onRefreshResult(any());
+    verify(registry).recordEscapedRefreshFailure(failure);
   }
 
   @Test
@@ -136,9 +141,14 @@ class LlmProviderCacheInvalidationListenerTest {
     }
 
     @Bean
-    LlmProviderCacheInvalidationListener listener(
+    LlmProviderCacheRefresher refresher(
         LlmProviderRegistry registry, LlmProviderRefreshRetrier retrier) {
-      return new LlmProviderCacheInvalidationListener(registry, retrier);
+      return new LlmProviderCacheRefresher(registry, retrier);
+    }
+
+    @Bean
+    LlmProviderCacheInvalidationListener listener(LlmProviderCacheRefresher refresher) {
+      return new LlmProviderCacheInvalidationListener(refresher);
     }
 
     @Bean(destroyMethod = "shutdown")

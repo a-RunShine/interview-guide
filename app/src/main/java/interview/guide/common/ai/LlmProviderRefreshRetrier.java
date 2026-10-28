@@ -10,13 +10,15 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 可恢复刷新失败的有界重试调度器。
+ * 可恢复刷新失败的重试调度器。
  *
  * <p>提交配置的监听器在 {@link LlmProviderRegistry#refresh()} 返回可恢复失败后调用
  * {@link #onRefreshResult(RefreshResult)} 安排重试。重试跑在独立的单线程守护线程池上，
@@ -26,8 +28,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * 就不再重试；失败变为不可恢复立即停止；可恢复则按递增退避继续，次数耗尽由
  * {@link LlmProviderRegistry#markGraceExpired()} 把状态推进到 {@link CacheState#EXPIRED}。
  *
- * <p>队列上界：同一时刻最多只有一条重试链、一个待执行的尝试（由 {@link #chainId} 令牌保证），
- * 因此虽然有界队列来自 {@link ScheduledThreadPoolExecutor} 的延迟队列，实际排队深度始终为 1。
+ * <p>并发上界由两道显式闸门保证，不依赖执行器队列：{@link #chainInFlight} 保证同一时刻最多
+ * 一条重试链，{@link #attemptPending} 保证同一时刻最多一次待执行的尝试。超出的刷新结果被合并到
+ * 已有链上（它的下一次尝试会重新读状态），因此无论调度器自身的延迟队列是否无界，排队深度都
+ * 不超过 1。执行器的拒绝策略只是关停时的兜底，不是上界的来源。
  */
 @Component
 @Slf4j
@@ -47,6 +51,10 @@ public class LlmProviderRefreshRetrier {
   private final AtomicLong chainId = new AtomicLong();
   /** 是否已有重试链在等待下一次尝试，保证同一时刻只有一条链。 */
   private final AtomicBoolean chainInFlight = new AtomicBoolean();
+  /** 准入许可：同一时刻最多一次已排期但尚未开始的尝试。 */
+  private final AtomicBoolean attemptPending = new AtomicBoolean();
+  /** 已排期的那次尝试，停止重试链时用来把它从队列里摘掉并归还准入许可。 */
+  private final AtomicReference<ScheduledFuture<?>> pendingAttempt = new AtomicReference<>();
 
   public LlmProviderRefreshRetrier(LlmProviderRegistry registry) {
     this(registry, newSingleThreadScheduler());
@@ -58,7 +66,10 @@ public class LlmProviderRefreshRetrier {
   }
 
   /**
-   * 单线程、守护线程、有界延迟队列的显式执行器。不使用 {@code Executors.newXxx}。
+   * 单线程、守护线程的显式调度器。不使用 {@code Executors.newXxx}。
+   *
+   * <p>延迟队列本身不设上界，排队深度由 {@link #attemptPending} 的准入检查控制在 1；
+   * 这里的拒绝策略只覆盖"执行器已关停"的兜底场景。
    */
   private static ScheduledExecutorService newSingleThreadScheduler() {
     ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(
@@ -105,17 +116,48 @@ public class LlmProviderRefreshRetrier {
     scheduleAttempt(chainId.incrementAndGet(), 1);
   }
 
+  /**
+   * 排一次尝试。准入检查保证同一时刻最多一次待执行的尝试：许可已被占用时直接放弃本次排期
+   * （已有的那次尝试会重新读取真实状态），因此执行器队列不会增长。
+   */
   private void scheduleAttempt(long token, int attempt) {
+    if (!attemptPending.compareAndSet(false, true)) {
+      log.debug("[LlmProviderRefreshRetrier] An attempt is already pending, coalescing retry {}/{}",
+          attempt, MAX_ATTEMPTS);
+      return;
+    }
+    if (token != chainId.get()) {
+      attemptPending.set(false);
+      log.debug("[LlmProviderRefreshRetrier] Retry chain superseded before scheduling {}/{}",
+          attempt, MAX_ATTEMPTS);
+      return;
+    }
     Duration delay = INITIAL_BACKOFF.multipliedBy(1L << (attempt - 1));
     log.warn("[LlmProviderRefreshRetrier] Scheduling refresh retry {}/{} in {} ms",
         attempt, MAX_ATTEMPTS, delay.toMillis());
     try {
-      executor.schedule(() -> attempt(token, attempt), delay.toMillis(), TimeUnit.MILLISECONDS);
+      ScheduledFuture<?> scheduled = executor.schedule(
+          () -> runAttempt(token, attempt), delay.toMillis(), TimeUnit.MILLISECONDS);
+      pendingAttempt.set(scheduled);
+      if (token != chainId.get()) {
+        // 排期期间链被停止：摘掉这次尝试并归还许可，避免留下一条不会执行的任务
+        pendingAttempt.compareAndSet(scheduled, null);
+        scheduled.cancel(false);
+        attemptPending.set(false);
+      }
     } catch (RejectedExecutionException e) {
+      attemptPending.set(false);
       log.error("[LlmProviderRefreshRetrier] Retry executor rejected attempt {}/{}",
           attempt, MAX_ATTEMPTS, e);
       stopChain("executor rejected the retry task");
     }
+  }
+
+  /** 任务开始执行时先归还准入许可，再走重试决策。 */
+  private void runAttempt(long token, int attempt) {
+    pendingAttempt.set(null);
+    attemptPending.set(false);
+    attempt(token, attempt);
   }
 
   private void attempt(long token, int attempt) {
@@ -188,9 +230,14 @@ public class LlmProviderRefreshRetrier {
     }
   }
 
-  /** 结束当前重试链：自增令牌让在途任务失效，并允许下一条链开始。 */
+  /** 结束当前重试链：自增令牌让在途任务失效，取消待执行的尝试，并允许下一条链开始。 */
   private void stopChain(String reason) {
     chainId.incrementAndGet();
+    ScheduledFuture<?> scheduled = pendingAttempt.getAndSet(null);
+    if (scheduled != null) {
+      scheduled.cancel(false);
+    }
+    attemptPending.set(false);
     chainInFlight.set(false);
     log.debug("[LlmProviderRefreshRetrier] Retry chain stopped: {}", reason);
   }
@@ -199,6 +246,11 @@ public class LlmProviderRefreshRetrier {
   public void shutdown() {
     chainInFlight.set(false);
     chainId.incrementAndGet();
+    ScheduledFuture<?> scheduled = pendingAttempt.getAndSet(null);
+    if (scheduled != null) {
+      scheduled.cancel(false);
+    }
+    attemptPending.set(false);
     executor.shutdownNow();
     log.info("[LlmProviderRefreshRetrier] Retry executor shut down");
   }

@@ -16,6 +16,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +25,9 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -167,6 +172,58 @@ class LlmProviderRefreshRetrierTest {
     retrier.onRefreshResult(retryableFailure());
 
     assertTrue(scheduler.isShutdown(), "关闭时应关停执行器");
+  }
+
+  @Test
+  @DisplayName("执行器拒绝排期时停止重试链，并归还准入许可")
+  void rejectedExecutionStopsChainAndReleasesAdmission() {
+    LlmProviderRegistry rejectingRegistry = mock(LlmProviderRegistry.class);
+    ScheduledExecutorService rejecting = mock(ScheduledExecutorService.class);
+    when(rejecting.schedule(any(Runnable.class), anyLong(), any()))
+        .thenThrow(new RejectedExecutionException("shutdown"));
+    LlmProviderRefreshRetrier rejectingRetrier =
+        new LlmProviderRefreshRetrier(rejectingRegistry, rejecting);
+    try {
+      rejectingRetrier.onRefreshResult(retryableFailure());
+
+      // 许可已归还：下一次可恢复失败仍会尝试排期
+      rejectingRetrier.onRefreshResult(retryableFailure());
+      verify(rejecting, times(2)).schedule(any(Runnable.class), anyLong(), any());
+    } finally {
+      rejectingRetrier.shutdown();
+    }
+  }
+
+  @Test
+  @DisplayName("同一时刻最多一次待执行尝试：重复的可恢复失败被合并而不是堆叠排期")
+  void admissionBoundKeepsAtMostOnePendingAttempt() {
+    retrier.onRefreshResult(retryableFailure());
+    retrier.onRefreshResult(retryableFailure());
+    retrier.onRefreshResult(retryableFailure());
+
+    assertEquals(1, scheduler.pendingCount(), "重复失败应合并到已有重试链上");
+  }
+
+  @Test
+  @DisplayName("停止重试链时取消待执行的尝试并归还准入许可")
+  void stoppingChainCancelsPendingAttemptAndReleasesAdmission() {
+    LlmProviderRegistry isolatedRegistry = mock(LlmProviderRegistry.class);
+    ScheduledExecutorService executor = mock(ScheduledExecutorService.class);
+    ScheduledFuture<?> pending = mock(ScheduledFuture.class);
+    when(executor.schedule(any(Runnable.class), anyLong(), any())).thenAnswer(invocation -> pending);
+    LlmProviderRefreshRetrier isolated = new LlmProviderRefreshRetrier(isolatedRegistry, executor);
+    try {
+      isolated.onRefreshResult(retryableFailure());
+      isolated.onRefreshResult(success());
+
+      verify(pending).cancel(false);
+
+      // 许可已归还：新的可恢复失败能重新排期
+      isolated.onRefreshResult(retryableFailure());
+      verify(executor, times(2)).schedule(any(Runnable.class), anyLong(), any());
+    } finally {
+      isolated.shutdown();
+    }
   }
 
   private static RefreshResult success() {
