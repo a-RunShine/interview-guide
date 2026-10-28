@@ -11,6 +11,8 @@ import interview.guide.modules.llmprovider.model.LlmProviderEntity;
 import interview.guide.modules.llmprovider.repository.LlmGlobalSettingRepository;
 import interview.guide.modules.llmprovider.repository.LlmProviderRepository;
 import interview.guide.modules.llmprovider.service.ApiKeyEncryptionService;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -50,6 +52,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -64,6 +67,19 @@ public class LlmProviderRegistry {
     /** 未配置时的宽限期兜底值，正常路径由 {@code app.ai.refresh-grace-duration} 提供。 */
     private static final Duration DEFAULT_GRACE_DURATION = Duration.ofSeconds(60);
 
+    /** 刷新失败计数，按失败类型分标签。运维告警规则依赖这个名字。 */
+    private static final String METRIC_REFRESH_FAILURES = "app.ai.llm_provider.refresh.failures";
+    /** 当前缓存状态，数值见 {@link #stateCode(CacheState)}。 */
+    private static final String METRIC_CACHE_STATE = "app.ai.llm_provider.cache.state";
+    private static final String TAG_FAILURE_TYPE = "type";
+
+    /** 可恢复失败：读库超时、连接异常等，调度方会重试。 */
+    static final String FAILURE_TYPE_RECOVERABLE = "recoverable";
+    /** 不可恢复失败：配置本身有问题，重试没有意义。 */
+    static final String FAILURE_TYPE_NON_RECOVERABLE = "non_recoverable";
+    /** 重试次数耗尽：宽限被提前收拢，缓存停止服务。 */
+    static final String FAILURE_TYPE_RETRY_EXHAUSTED = "retry_exhausted";
+
     private final LlmProviderProperties properties;
     private final AtomicReference<Generation> generation = new AtomicReference<>(Generation.lazy());
     private final AtomicReference<Instant> graceDeadline = new AtomicReference<>();
@@ -77,10 +93,16 @@ public class LlmProviderRegistry {
     private final ToolCallback interviewSkillsToolCallback;
     private final Clock clock;
     private final Duration graceDuration;
+    /** 允许缺失：单测环境没有 Micrometer 时全部指标静默跳过。 */
+    private final MeterRegistry meterRegistry;
 
     private volatile boolean refreshing;
     private volatile String lastFailureReason;
     private volatile boolean lastFailureRetryable;
+    /** 本次构建失败时正在校验的 provider id，只用于日志，不参与业务判断。 */
+    private volatile String failedProviderId;
+    /** 当前这一轮失败是否已经计过"重试耗尽"，保证一次失败只报警一次。 */
+    private final AtomicBoolean graceExpiryCounted = new AtomicBoolean();
     private static final Map<String, String> RECOMMENDED_EMBEDDING_MODELS = Map.of(
         "dashscope", "text-embedding-v3",
         "glm", "embedding-3",
@@ -97,9 +119,22 @@ public class LlmProviderRegistry {
             ApiKeyEncryptionService encryptionService,
             @Autowired(required = false) ToolCallingManager toolCallingManager,
             @Autowired(required = false) ObservationRegistry observationRegistry,
-            @Autowired(required = false) @Qualifier("interviewSkillsToolCallback") ToolCallback interviewSkillsToolCallback) {
+            @Autowired(required = false) @Qualifier("interviewSkillsToolCallback") ToolCallback interviewSkillsToolCallback,
+            @Autowired(required = false) MeterRegistry meterRegistry) {
         this(properties, providerRepository, globalSettingRepository, encryptionService, toolCallingManager,
-            observationRegistry, interviewSkillsToolCallback, Clock.systemUTC());
+            observationRegistry, interviewSkillsToolCallback, Clock.systemUTC(), meterRegistry);
+    }
+
+    LlmProviderRegistry(
+            LlmProviderProperties properties,
+            LlmProviderRepository providerRepository,
+            LlmGlobalSettingRepository globalSettingRepository,
+            ApiKeyEncryptionService encryptionService,
+            ToolCallingManager toolCallingManager,
+            ObservationRegistry observationRegistry,
+            ToolCallback interviewSkillsToolCallback) {
+        this(properties, providerRepository, globalSettingRepository, encryptionService, toolCallingManager,
+            observationRegistry, interviewSkillsToolCallback, Clock.systemUTC(), null);
     }
 
     LlmProviderRegistry(
@@ -111,6 +146,20 @@ public class LlmProviderRegistry {
             ObservationRegistry observationRegistry,
             ToolCallback interviewSkillsToolCallback,
             Clock clock) {
+        this(properties, providerRepository, globalSettingRepository, encryptionService, toolCallingManager,
+            observationRegistry, interviewSkillsToolCallback, clock, null);
+    }
+
+    LlmProviderRegistry(
+            LlmProviderProperties properties,
+            LlmProviderRepository providerRepository,
+            LlmGlobalSettingRepository globalSettingRepository,
+            ApiKeyEncryptionService encryptionService,
+            ToolCallingManager toolCallingManager,
+            ObservationRegistry observationRegistry,
+            ToolCallback interviewSkillsToolCallback,
+            Clock clock,
+            MeterRegistry meterRegistry) {
         this.properties = properties;
         this.providerRepository = providerRepository;
         this.globalSettingRepository = globalSettingRepository;
@@ -120,6 +169,8 @@ public class LlmProviderRegistry {
         this.interviewSkillsToolCallback = interviewSkillsToolCallback;
         this.clock = clock != null ? clock : Clock.systemUTC();
         this.graceDuration = resolveGraceDuration(properties);
+        this.meterRegistry = meterRegistry;
+        registerCacheStateGauge();
     }
 
     public LlmProviderRegistry(
@@ -127,7 +178,8 @@ public class LlmProviderRegistry {
             ToolCallingManager toolCallingManager,
             ObservationRegistry observationRegistry,
             ToolCallback interviewSkillsToolCallback) {
-        this(properties, null, null, null, toolCallingManager, observationRegistry, interviewSkillsToolCallback);
+        this(properties, null, null, null, toolCallingManager, observationRegistry,
+            interviewSkillsToolCallback, Clock.systemUTC(), null);
     }
 
     private static Duration resolveGraceDuration(LlmProviderProperties properties) {
@@ -234,13 +286,17 @@ public class LlmProviderRegistry {
 
     private RefreshResult handleRefreshFailure(RuntimeException failure) {
         boolean retryable = FailureClassifier.isRetryable(failure);
+        String failureType = retryable ? FAILURE_TYPE_RECOVERABLE : FAILURE_TYPE_NON_RECOVERABLE;
         Instant now = clock.instant();
         Instant deadline = graceDeadline.updateAndGet(
             existing -> existing != null ? existing : now.plus(graceDuration));
         lastFailureReason = failure.getMessage();
         lastFailureRetryable = retryable;
-        log.error("[LlmProviderRegistry] Refresh failed (retryable={}), state={}, graceRemainingMs={}",
-            retryable, CacheState.STALE, Duration.between(now, deadline).toMillis(), failure);
+        recordFailure(failureType);
+        log.error("[LlmProviderRegistry] Refresh failed, provider={}, failureType={}, state={}, "
+                + "graceRemainingMs={}, retryable={}",
+            failedProviderId, failureType, CacheState.STALE, Duration.between(now, deadline).toMillis(),
+            retryable, failure);
         return RefreshResult.failure(failure.getMessage(), retryable);
     }
 
@@ -259,8 +315,15 @@ public class LlmProviderRegistry {
         log.warn("[LlmProviderRegistry] Grace expiry requested without a pending failure, ignored");
         return;
       }
-      log.error("[LlmProviderRegistry] Grace exhausted, state={}, lastFailureReason={}",
-          CacheState.EXPIRED, lastFailureReason);
+      // 一次失败只算一次"重试耗尽"报警：重复调用不再重复计数
+      if (!graceExpiryCounted.compareAndSet(false, true)) {
+        log.debug("[LlmProviderRegistry] Grace already marked exhausted, skipping duplicate count");
+        return;
+      }
+      recordFailure(FAILURE_TYPE_RETRY_EXHAUSTED);
+      log.error("[LlmProviderRegistry] Grace exhausted, provider={}, failureType={}, state={}, "
+              + "graceRemainingMs=0, lastFailureReason={}",
+          failedProviderId, FAILURE_TYPE_RETRY_EXHAUSTED, CacheState.EXPIRED, lastFailureReason);
     }
 
     /**
@@ -297,6 +360,42 @@ public class LlmProviderRegistry {
         graceDeadline.set(null);
         lastFailureReason = null;
         lastFailureRetryable = false;
+        failedProviderId = null;
+        graceExpiryCounted.set(false);
+    }
+
+    /**
+     * 缓存状态到数值的映射：监控只需比较阈值就能判断"当前是否过期"。
+     * 顺序按严重程度递增：{@code READY=0 < REFRESHING=1 < STALE=2 < EXPIRED=3}。
+     */
+    static int stateCode(CacheState state) {
+        return switch (state) {
+            case READY -> 0;
+            case REFRESHING -> 1;
+            case STALE -> 2;
+            case EXPIRED -> 3;
+        };
+    }
+
+    /**
+     * 注册缓存状态仪表。仪表在抓取时通过 {@link #status()} 采样，因此状态变化无需额外推送；
+     * 没有 {@link MeterRegistry}（单测环境）时什么都不做。
+     */
+    private void registerCacheStateGauge() {
+        if (meterRegistry == null) {
+            return;
+        }
+        Gauge.builder(METRIC_CACHE_STATE, this, registry -> stateCode(registry.status().state()))
+            .description("LLM provider cache state: 0=READY, 1=REFRESHING, 2=STALE, 3=EXPIRED")
+            .register(meterRegistry);
+    }
+
+    /** 按失败类型累加一次计数。没有 {@link MeterRegistry} 时静默跳过。 */
+    private void recordFailure(String failureType) {
+        if (meterRegistry == null) {
+            return;
+        }
+        meterRegistry.counter(METRIC_REFRESH_FAILURES, TAG_FAILURE_TYPE, failureType).increment();
     }
 
     /**
@@ -318,6 +417,7 @@ public class LlmProviderRegistry {
     }
 
     private Generation buildGeneration() {
+        failedProviderId = null;
         Map<String, ProviderSnapshot> snapshots = providerRepository == null
             ? buildSnapshotsFromProperties()
             : buildSnapshotsFromDatabase();
@@ -351,6 +451,7 @@ public class LlmProviderRegistry {
     private String requireEnabledProvider(
             Map<String, ProviderSnapshot> snapshots, String providerId, String role) {
         if (!snapshots.containsKey(providerId)) {
+            failedProviderId = providerId;
             throw new BusinessException(
                 ErrorCode.PROVIDER_NOT_FOUND,
                 role + " Provider '" + providerId + "' 不存在或已被禁用");
@@ -384,6 +485,7 @@ public class LlmProviderRegistry {
      * 离线校验单个已启用 provider：只读配置、解密密钥、校验参数，不发起网络调用。
      */
     private ProviderSnapshot validate(LlmProviderEntity entity) {
+        failedProviderId = entity.getId();
         if (!entity.isEnabled()) {
             throw new BusinessException(
                 ErrorCode.PROVIDER_NOT_FOUND,
