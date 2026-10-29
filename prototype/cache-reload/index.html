@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>[PROTOTYPE] 配置变更后缓存如何收敛</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; max-width: 960px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.55; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin: 28px 0 8px; color: #444; }
+  .tag { display: inline-block; font-size: 12px; background: #fde68a; padding: 2px 8px; border-radius: 4px; margin-left: 8px; vertical-align: middle; }
+  .question { background: #f6f6f4; padding: 12px 16px; border-radius: 8px; font-size: 14px; }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+  .card { border: 1px solid #e3e3e0; border-radius: 8px; padding: 10px 12px; }
+  .card small { display: block; font-size: 12px; color: #888; }
+  .card strong { font-size: 16px; }
+  .ok { color: #1a7f37; } .warn { color: #b26a00; } .bad { color: #c62828; }
+  .request { margin-top: 10px; font-size: 14px; }
+  button { margin: 3px; padding: 7px 12px; border: 1px solid #bbb; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; }
+  button:hover:not(:disabled) { border-color: #2563eb; color: #2563eb; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.next { background: #2563eb; color: #fff; border-color: #2563eb; }
+  button.tab.active { background: #222; color: #fff; border-color: #222; }
+  select { padding: 6px; font-size: 13px; width: 100%; max-width: 700px; }
+  .desc { font-size: 14px; color: #555; margin: 6px 0; }
+  .log { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: #111; color: #ddd; padding: 12px; border-radius: 8px; max-height: 300px; overflow: auto; white-space: pre-wrap; }
+  .done { color: #1a7f37; }
+</style>
+</head>
+<body>
+
+<h1>配置变更后，缓存如何收敛 <span class="tag">PROTOTYPE</span></h1>
+<p class="question">
+  <b>要回答的问题：</b>数据库里的配置已经提交（版本变新），但缓存还没更新。
+  当前代码怎么表现？如果在 AFTER_COMMIT 时就读数据库刷新，失败后应该怎样处理？
+  <b>失败分两类：</b>短暂故障（读库超时，过会儿能好，可以重试）和持久故障（provider 被禁用，重试没用，必须人工修）。
+</p>
+
+<h2>策略</h2>
+<select id="policy"></select>
+
+<h2>当前状态</h2>
+<div class="cards" id="cards"></div>
+<div class="request" id="request"></div>
+
+<h2>自由操作</h2>
+<div id="free"></div>
+
+<h2>引导场景</h2>
+<div id="tabs"></div>
+<p class="desc" id="desc"></p>
+<div id="steps"></div>
+
+<h2>发生了什么（日志）</h2>
+<div class="log" id="log"></div>
+
+<script>
+// ===== 纯逻辑模块：不碰 DOM，可以整体搬到真实代码里 =====
+const Model = (() => {
+  const POLICIES = {
+    current: '当前代码：AFTER_COMMIT 只清空缓存，不读数据库；读库失败发生在下一次请求的懒加载时',
+    improved: '改进方案：AFTER_COMMIT 读数据库；失败保留旧值；短暂故障重试，持久故障立即报警',
+  };
+  const MAX_RETRY = 3;
+  const FAULTS = {
+    none: '正常',
+    transient: '短暂故障：数据库读取超时',
+    persistent: '持久故障：provider 被禁用',
+  };
+  const ERR = {
+    transient:  { retryable: true,  msg: '读库超时' },
+    persistent: { retryable: false, msg: 'provider 已禁用（Unknown LLM provider）' },
+  };
+
+  const init = (policy) => ({
+    policy,
+    dbVersion: 1,
+    fault: 'none',
+    cache: { version: 1 },        // version 为 null 表示缓存已清空
+    pendingReload: false,
+    retriesLeft: 0,
+    alerts: 0,
+    lastRequest: null,
+    log: [],
+  });
+
+  const log = (s, msg) => ({ ...s, log: [...s.log, msg] });
+  const alert = (s, msg) => log({ ...s, alerts: s.alerts + 1 }, `🚨 报警：${msg}`);
+
+  function loadFromDb(s) {
+    if (s.fault === 'none') return { ok: true, version: s.dbVersion };
+    return { ok: false, err: ERR[s.fault] };
+  }
+
+  function commit(s) {
+    const v = s.dbVersion + 1;
+    return log({ ...s, dbVersion: v, pendingReload: true }, `事务提交：数据库版本 v${v}`);
+  }
+
+  function afterCommit(s) {
+    if (!s.pendingReload) return log(s, '没有待刷新的提交');
+    const t = { ...s, pendingReload: false };
+
+    if (s.policy === 'current') {
+      return log({ ...t, cache: { version: null } }, '当前代码：清空缓存，不读数据库');
+    }
+
+    const r = loadFromDb(t);
+    if (r.ok) {
+      return log({ ...t, cache: { version: r.version } }, `刷新成功，缓存 v${r.version}`);
+    }
+    if (!r.err.retryable) {
+      return alert(
+        log(t, `刷新失败：${r.err.msg}（不可重试），缓存保留旧版本 v${s.cache.version ?? '空'}`),
+        '配置失效，重试无用，需要人工修复'
+      );
+    }
+    return log(
+      { ...t, retriesLeft: MAX_RETRY },
+      `刷新失败：${r.err.msg}（可重试），缓存保留旧版本 v${s.cache.version ?? '空'}，安排 ${MAX_RETRY} 次重试`
+    );
+  }
+
+  function retryTick(s) {
+    if (s.policy === 'current') return log(s, '当前代码没有后台重试');
+    if (s.retriesLeft <= 0) return log(s, '没有待执行的重试');
+    const r = loadFromDb(s);
+    if (r.ok) {
+      return log({ ...s, cache: { version: r.version }, retriesLeft: 0 }, `重试成功，缓存 v${r.version}`);
+    }
+    if (!r.err.retryable) {
+      return alert({ ...s, retriesLeft: 0 }, `重试时遇到不可重试的错误：${r.err.msg}，停止重试`);
+    }
+    const left = s.retriesLeft - 1;
+    if (left > 0) {
+      return log({ ...s, retriesLeft: left }, `重试失败：${r.err.msg}（剩余 ${left} 次）`);
+    }
+    return alert(
+      log({ ...s, retriesLeft: 0, cache: { version: null } }, `重试失败：${r.err.msg}（已用完）`),
+      '重试耗尽，缓存已清空，之后改为懒加载'
+    );
+  }
+
+  function request(s) {
+    let t = s;
+    if (t.cache.version === null) {
+      const r = loadFromDb(t);
+      if (!r.ok) {
+        return {
+          ...log(t, `用户请求报错：懒加载读库失败（${r.err.msg}）`),
+          lastRequest: { ok: false, error: r.err.msg },
+        };
+      }
+      t = { ...t, cache: { version: r.version } };
+    }
+    const stale = t.cache.version !== t.dbVersion;
+    return {
+      ...log(t, `用户请求，拿到 v${t.cache.version}${stale ? '（过期，数据库已是 v' + t.dbVersion + '）' : ''}`),
+      lastRequest: { ok: true, version: t.cache.version, stale },
+    };
+  }
+
+  const manualReload = (s) =>
+    log({ ...s, cache: { version: null } }, '手动调用 /reload：清空缓存，下次请求重新读取');
+
+  const setFault = (s, fault, msg) => log({ ...s, fault }, msg);
+
+  function status(s) {
+    if (s.cache.version === null) return { text: '空（待懒加载）', cls: 'warn' };
+    if (s.cache.version !== s.dbVersion) return { text: `过期 v${s.cache.version} ≠ v${s.dbVersion}`, cls: 'bad' };
+    return { text: '一致', cls: 'ok' };
+  }
+
+  return { POLICIES, FAULTS, init, commit, afterCommit, retryTick, request, manualReload, setFault, status };
+})();
+
+// ===== 页面：只负责把按钮映射到纯逻辑，并渲染结果 =====
+const ACTIONS = {
+  commit:      { label: '提交一次配置修改', fn: Model.commit },
+  afterCommit: { label: 'AFTER_COMMIT 刷新缓存', fn: Model.afterCommit },
+  retry:       { label: '后台重试一次', fn: Model.retryTick },
+  request:     { label: '用户发起一次请求', fn: Model.request },
+  transient:   { label: '注入：短暂故障（读库超时）', fn: s => Model.setFault(s, 'transient', '注入故障：数据库读取超时') },
+  persistent:  { label: '注入：持久故障（provider 被禁用）', fn: s => Model.setFault(s, 'persistent', '注入故障：provider 被禁用') },
+  recover:     { label: '故障消失 / 配置已修复', fn: s => Model.setFault(s, 'none', '故障消失，读库恢复正常') },
+  manual:      { label: '手动调用 /reload', fn: Model.manualReload },
+};
+
+const SCENARIOS = [
+  {
+    title: '1. 正常提交',
+    policy: 'current',
+    desc: '基线：没有故障，提交后缓存刷新，请求拿到新版本。',
+    steps: ['commit', 'afterCommit', 'request'],
+  },
+  {
+    title: '2. 当前代码遇到短暂故障',
+    policy: 'current',
+    desc: '当前代码的 AFTER_COMMIT 不读数据库，所以刷新本身不会失败。读库失败会出现在下一次请求的懒加载里：用户这次报错，故障消失后下次请求自动恢复。',
+    steps: ['commit', 'transient', 'afterCommit', 'request', 'recover', 'request'],
+  },
+  {
+    title: '3. 改进版遇到短暂故障',
+    policy: 'improved',
+    desc: '改进版在 AFTER_COMMIT 就读库。读库超时时保留旧值，并安排重试。注意中间用户拿到的是过期版本，重试成功后才追上。',
+    steps: ['commit', 'transient', 'afterCommit', 'request', 'recover', 'retry', 'request'],
+  },
+  {
+    title: '4. 改进版遇到持久故障',
+    policy: 'improved',
+    desc: '持久故障（provider 被禁用）不会因为重试而好转。改进版应该立即报警，不做无用重试。注意：用户请求仍然拿到旧版本，没有任何报错，这是最需要留意的地方。修复配置后，要手动重载或等下次请求才会更新。',
+    steps: ['commit', 'persistent', 'afterCommit', 'request', 'retry', 'recover', 'manual', 'request'],
+  },
+  {
+    title: '5. 改进版：短暂故障超过重试次数',
+    policy: 'improved',
+    desc: '读库超时持续了 3 次重试。重试耗尽后报警、清空缓存，之后走懒加载。此时如果故障还在，用户请求会报错；故障消失后自动恢复。',
+    steps: ['commit', 'transient', 'afterCommit', 'retry', 'retry', 'retry', 'request', 'recover', 'request'],
+  },
+];
+
+let S = Model.init('current');
+let scenarioIdx = 0;
+let stepIdx = 0;
+
+function dispatch(action) {
+  S = ACTIONS[action].fn(S);
+  render();
+}
+
+function startScenario(i) {
+  scenarioIdx = i;
+  stepIdx = 0;
+  S = Model.init(SCENARIOS[i].policy);
+  S = { ...S, log: [`—— 开始场景：${SCENARIOS[i].title} ——`] };
+  render();
+}
+
+function render() {
+  document.getElementById('policy').innerHTML = Object.entries(Model.POLICIES)
+    .map(([k, v]) => `<option value="${k}" ${k === S.policy ? 'selected' : ''}>${v}</option>`).join('');
+
+  const st = Model.status(S);
+  const faultCls = S.fault === 'none' ? 'ok' : 'bad';
+  document.getElementById('cards').innerHTML = `
+    <div class="card"><small>数据库版本</small><strong>v${S.dbVersion}</strong></div>
+    <div class="card"><small>缓存版本</small><strong>${S.cache.version === null ? '空' : 'v' + S.cache.version}</strong></div>
+    <div class="card"><small>一致性</small><strong class="${st.cls}">${st.text}</strong></div>
+    <div class="card"><small>当前故障</small><strong class="${faultCls}">${Model.FAULTS[S.fault]}</strong></div>
+    <div class="card"><small>待执行重试</small><strong>${S.retriesLeft}</strong></div>
+    <div class="card"><small>报警次数</small><strong class="${S.alerts ? 'bad' : ''}">${S.alerts}</strong></div>`;
+
+  const r = S.lastRequest;
+  document.getElementById('request').innerHTML = !r ? '' :
+    r.ok
+      ? `最近一次请求：<b>成功</b>，拿到 v${r.version}${r.stale ? ' <span class="bad">（过期）</span>' : ''}`
+      : `最近一次请求：<b class="bad">报错</b>（${r.error}）`;
+
+  document.getElementById('free').innerHTML = Object.entries(ACTIONS)
+    .map(([k, a]) => `<button onclick="dispatch('${k}')">${a.label}</button>`).join('');
+
+  document.getElementById('tabs').innerHTML = SCENARIOS
+    .map((sc, i) => `<button class="tab ${i === scenarioIdx ? 'active' : ''}" onclick="startScenario(${i})">${sc.title}</button>`).join('');
+
+  const sc = SCENARIOS[scenarioIdx];
+  document.getElementById('desc').textContent = sc.desc;
+  document.getElementById('steps').innerHTML = sc.steps.map((k, i) => {
+    const primary = i === stepIdx ? 'next' : '';
+    const dis = i === stepIdx ? '' : 'disabled';
+    return `<button class="${primary}" ${dis} onclick="runStep(${i})">${i + 1}. ${ACTIONS[k].label}</button>`;
+  }).join(' ') + (stepIdx >= sc.steps.length ? '<p class="done">场景完成</p>' : '');
+
+  const logEl = document.getElementById('log');
+  logEl.textContent = S.log.join('\n');
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function runStep(i) {
+  if (i !== stepIdx) return;
+  dispatch(SCENARIOS[scenarioIdx].steps[i]);
+  stepIdx++;
+  render();
+}
+
+document.getElementById('policy').addEventListener('change', e => {
+  S = { ...S, policy: e.target.value, log: [...S.log, `切换策略：${Model.POLICIES[e.target.value]}`] };
+  render();
+});
+
+startScenario(0);
+</script>
+</body>
+</html>
