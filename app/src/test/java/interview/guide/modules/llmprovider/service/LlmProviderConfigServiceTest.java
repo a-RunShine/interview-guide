@@ -1,12 +1,12 @@
 package interview.guide.modules.llmprovider.service;
 
-import interview.guide.common.ai.LlmProviderRegistry;
 import interview.guide.common.config.LlmProviderProperties;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.llmprovider.dto.CreateProviderRequest;
 import interview.guide.modules.llmprovider.dto.DefaultProviderDTO;
 import interview.guide.modules.llmprovider.dto.UpdateProviderRequest;
+import interview.guide.modules.llmprovider.event.LlmProviderCacheInvalidatedEvent;
 import interview.guide.modules.voiceinterview.config.VoiceInterviewProperties;
 import interview.guide.modules.voiceinterview.service.QwenAsrService;
 import interview.guide.modules.voiceinterview.service.QwenTtsService;
@@ -18,6 +18,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
@@ -36,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -45,7 +47,7 @@ import static org.mockito.Mockito.when;
 class LlmProviderConfigServiceTest {
 
     @Mock private LlmProviderProperties properties;
-    @Mock private LlmProviderRegistry registry;
+    @Mock private ApplicationEventPublisher eventPublisher;
     @Mock private VoiceInterviewProperties voiceProperties;
     @Mock private QwenAsrService asrService;
     @Mock private QwenTtsService ttsService;
@@ -68,7 +70,7 @@ class LlmProviderConfigServiceTest {
 
         service = new LlmProviderConfigService(
             properties,
-            registry,
+            eventPublisher,
             voiceProperties,
             asrService,
             ttsService
@@ -90,7 +92,7 @@ class LlmProviderConfigServiceTest {
             when(properties.getConfigEnvPath()).thenReturn(tempDir.resolve(".env").toString());
 
             LlmProviderConfigService failing = new LlmProviderConfigService(
-                properties, registry, voiceProperties, asrService, ttsService);
+                properties, eventPublisher, voiceProperties, asrService, ttsService);
 
             assertThrows(BusinessException.class, failing::validateWritablePaths);
         }
@@ -191,7 +193,7 @@ class LlmProviderConfigServiceTest {
             service.updateProvider("dashscope", new UpdateProviderRequest(null, null, null, "", null));
 
             assertNull(config.getEmbeddingModel());
-            verify(registry).reload();
+            verify(eventPublisher).publishEvent(any(LlmProviderCacheInvalidatedEvent.class));
         }
 
         @Test
@@ -210,7 +212,7 @@ class LlmProviderConfigServiceTest {
             service.updateProvider("dashscope", new UpdateProviderRequest(null, null, null, "   ", null));
 
             assertNull(config.getEmbeddingModel());
-            verify(registry).reload();
+            verify(eventPublisher).publishEvent(any(LlmProviderCacheInvalidatedEvent.class));
         }
 
         @Test
@@ -254,7 +256,7 @@ class LlmProviderConfigServiceTest {
 
             assertEquals(ErrorCode.PROVIDER_NOT_FOUND.getCode(), exception.getCode());
             verify(properties, never()).setDefaultProvider("unknown");
-            verify(registry, never()).reload();
+            verify(eventPublisher, never()).publishEvent(any(LlmProviderCacheInvalidatedEvent.class));
         }
 
         @Test
@@ -268,7 +270,7 @@ class LlmProviderConfigServiceTest {
             service.updateDefaultProvider(new DefaultProviderDTO("glm"));
 
             verify(properties).setDefaultProvider("glm");
-            verify(registry).reload();
+            verify(eventPublisher).publishEvent(any(LlmProviderCacheInvalidatedEvent.class));
         }
     }
 
@@ -280,7 +282,7 @@ class LlmProviderConfigServiceTest {
             when(properties.getConfigYamlPath()).thenReturn(null);
             when(properties.getConfigEnvPath()).thenReturn(envFile.toString());
             return new LlmProviderConfigService(
-                properties, registry, voiceProperties, asrService, ttsService);
+                properties, eventPublisher, voiceProperties, asrService, ttsService);
         }
 
         @Test
@@ -331,7 +333,7 @@ class LlmProviderConfigServiceTest {
             when(properties.getConfigEnvPath()).thenReturn(null);
 
             LlmProviderConfigService nullEnvService = new LlmProviderConfigService(
-                properties, registry, voiceProperties, asrService, ttsService);
+                properties, eventPublisher, voiceProperties, asrService, ttsService);
 
             assertDoesNotThrow(() -> nullEnvService.createProvider(
                 new CreateProviderRequest("test", "http://localhost", "key", "model", null, null)));
@@ -364,7 +366,7 @@ class LlmProviderConfigServiceTest {
             when(properties.getConfigEnvPath()).thenReturn(null);
 
             LlmProviderConfigService yamlService = new LlmProviderConfigService(
-                properties, registry, voiceProperties, asrService, ttsService);
+                properties, eventPublisher, voiceProperties, asrService, ttsService);
 
             when(properties.getProviders()).thenReturn(new HashMap<>());
 
@@ -395,7 +397,7 @@ class LlmProviderConfigServiceTest {
             when(properties.getConfigEnvPath()).thenReturn(null);
 
             LlmProviderConfigService yamlService = new LlmProviderConfigService(
-                properties, registry, voiceProperties, asrService, ttsService);
+                properties, eventPublisher, voiceProperties, asrService, ttsService);
 
             when(properties.getProviders()).thenReturn(new HashMap<>());
 
@@ -415,7 +417,7 @@ class LlmProviderConfigServiceTest {
             when(properties.getConfigEnvPath()).thenReturn(null);
 
             LlmProviderConfigService nullYamlService = new LlmProviderConfigService(
-                properties, registry, voiceProperties, asrService, ttsService);
+                properties, eventPublisher, voiceProperties, asrService, ttsService);
 
             assertDoesNotThrow(() -> nullYamlService.createProvider(
                 new CreateProviderRequest("test", "http://localhost", "key", "model", null, null)));

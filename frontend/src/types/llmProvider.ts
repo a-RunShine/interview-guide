@@ -38,6 +38,24 @@ export interface ProviderTestResult {
   model: string;
 }
 
+/** LLM Provider 缓存状态，与后端状态机枚举保持一致，翻译在前端完成。 */
+export type LlmProviderCacheState = 'READY' | 'REFRESHING' | 'STALE' | 'EXPIRED';
+
+export interface LlmProviderCacheStatus {
+  state: LlmProviderCacheState | string;
+  lastSuccessAt: string | null;
+  lastFailureReason: string | null;
+  graceSecondsRemaining: number;
+  retryable: boolean;
+}
+
+export interface LlmProviderReloadResult {
+  success: boolean;
+  builtAt: string | null;
+  failureReason: string | null;
+  retryable: boolean;
+}
+
 export interface DefaultProvider {
   defaultProvider: string;
   defaultEmbeddingProvider: string;

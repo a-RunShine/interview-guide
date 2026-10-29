@@ -6,11 +6,14 @@ import interview.guide.modules.llmprovider.dto.AsrConfigDTO;
 import interview.guide.modules.llmprovider.dto.AsrConfigRequest;
 import interview.guide.modules.llmprovider.dto.CreateProviderRequest;
 import interview.guide.modules.llmprovider.dto.DefaultProviderDTO;
+import interview.guide.modules.llmprovider.dto.LlmProviderCacheStatusResponse;
+import interview.guide.modules.llmprovider.dto.LlmProviderReloadResponse;
 import interview.guide.modules.llmprovider.dto.ProviderDTO;
 import interview.guide.modules.llmprovider.dto.ProviderTestResult;
 import interview.guide.modules.llmprovider.dto.TtsConfigDTO;
 import interview.guide.modules.llmprovider.dto.TtsConfigRequest;
 import interview.guide.modules.llmprovider.dto.UpdateProviderRequest;
+import interview.guide.modules.llmprovider.service.LlmProviderCacheService;
 import interview.guide.modules.llmprovider.service.LlmProviderConfigService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +36,7 @@ import java.util.List;
 public class LlmProviderController {
 
   private final LlmProviderConfigService configService;
+  private final LlmProviderCacheService cacheService;
 
   @GetMapping("/list")
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
@@ -74,11 +78,22 @@ public class LlmProviderController {
     return Result.success(configService.testProvider(id));
   }
 
+  /**
+   * 手动刷新缓存：同步尝试验证并切换。
+   *
+   * <p>成功 / 失败到 {@code Result} 的判定在 Service 里完成，这里只做委托。
+   * 失败仍是 HTTP 200，并且 {@code data} 里带回失败原因与真实的 {@code retryable}。
+   */
   @PostMapping("/reload")
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 5)
-  public Result<Void> reloadProviders() {
-    configService.reloadProviders();
-    return Result.success();
+  public Result<LlmProviderReloadResponse> reloadProviders() {
+    return cacheService.reloadProviders();
+  }
+
+  @GetMapping("/cache-status")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+  public Result<LlmProviderCacheStatusResponse> getCacheStatus() {
+    return Result.success(cacheService.cacheStatus());
   }
 
   @GetMapping("/default-provider")

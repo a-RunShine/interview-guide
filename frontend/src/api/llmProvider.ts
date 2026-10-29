@@ -1,4 +1,6 @@
 import request from './request';
+import type { Result } from './request';
+import { toReloadResult } from './llmProviderReload';
 import type {
   ProviderItem,
   CreateProviderRequest,
@@ -9,6 +11,8 @@ import type {
   TtsConfig,
   AsrConfigRequest,
   TtsConfigRequest,
+  LlmProviderCacheStatus,
+  LlmProviderReloadResult,
 } from '../types/llmProvider';
 
 export const llmProviderApi = {
@@ -28,8 +32,24 @@ export const llmProviderApi = {
   test: (id: string) =>
     request.post<ProviderTestResult>(`/api/llm-provider/${id}/test`),
 
-  reload: () =>
-    request.post<void>('/api/llm-provider/reload'),
+  /**
+   * 手动刷新：后端同步校验并返回真实结果。
+   *
+   * 成功是 `Result.success`，失败是 `Result.error`（HTTP 200），但两条路径的 `data` 里都带
+   * `success` / `failureReason` / `retryable`。统一拦截器会把失败变成异常、丢掉 data，
+   * 所以这里跳过解包自己读；解析规则集中在 `toReloadResult`，便于单测覆盖。
+   */
+  reload: async (): Promise<LlmProviderReloadResult> => {
+    const payload = await request.post<Result<LlmProviderReloadResult>>(
+      '/api/llm-provider/reload',
+      undefined,
+      { skipResultTransform: true },
+    );
+    return toReloadResult(payload);
+  },
+
+  getCacheStatus: () =>
+    request.get<LlmProviderCacheStatus>('/api/llm-provider/cache-status'),
 
   getDefaultProvider: () =>
     request.get<DefaultProvider>('/api/llm-provider/default-provider'),

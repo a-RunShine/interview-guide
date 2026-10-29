@@ -107,6 +107,8 @@ app:
     # 开发环境默认写到用户主目录下，避免污染源码目录或 jar 内 classpath 资源。
     config-yaml-path: ${APP_AI_CONFIG_YAML_PATH:${user.home}/.interview-guide/llm-providers.yml}
     config-env-path: ${APP_AI_CONFIG_ENV_PATH:${user.home}/.interview-guide/llm-providers.env}
+    # 刷新失败后继续使用旧配置的宽限时长；超时后请求返回 PROVIDER_UNAVAILABLE。
+    refresh-grace-duration: ${APP_AI_REFRESH_GRACE_DURATION:60s}
     agent-utils:
       skills-root: ${APP_AI_AGENT_UTILS_SKILLS_ROOT:classpath:skills}
     providers:
