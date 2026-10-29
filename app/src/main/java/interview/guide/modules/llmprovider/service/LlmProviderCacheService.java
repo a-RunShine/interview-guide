@@ -48,8 +48,13 @@ public class LlmProviderCacheService {
     }
     log.warn("[LlmProviderCacheService] Manual reload failed, retryable={}, reason={}",
         result.retryable(), failureReason);
-    // 失败仍带回 data：retryable 是给前端的决策依据，不能因为错误码而丢掉
-    return Result.error(ErrorCode.PROVIDER_CONFIG_READ_FAILED, failureReason, response);
+    // 失败仍带回 data：retryable 是给前端的决策依据，不能因为错误码而丢掉。
+    // 错误码要与 retryable 自洽：可恢复失败不能报成"读取配置失败"，否则前端看到
+    // "读取失败 + 会自动重试"这种自相矛盾的组合。
+    ErrorCode errorCode = result.retryable()
+        ? ErrorCode.PROVIDER_REFRESH_RETRYABLE
+        : ErrorCode.PROVIDER_CONFIG_READ_FAILED;
+    return Result.error(errorCode, failureReason, response);
   }
 
   /** 当前缓存状态快照，状态名保持枚举原名，由前端负责翻译。 */

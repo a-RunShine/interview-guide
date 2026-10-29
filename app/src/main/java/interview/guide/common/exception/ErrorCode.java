@@ -82,7 +82,9 @@ public enum ErrorCode {
     VOICE_CONFIG_READ_FAILED(11009, "读取语音服务配置失败"),
     VOICE_CONFIG_WRITE_FAILED(11010, "写入语音服务配置失败"),
     VOICE_CONFIG_TEST_FAILED(11011, "语音服务连通性测试失败"),
-    PROVIDER_UNAVAILABLE(11012, "LLM Provider 配置不可用，服务暂时无法提供 AI 能力");
+    PROVIDER_UNAVAILABLE(11012, "LLM Provider 配置不可用，服务暂时无法提供 AI 能力"),
+    /** 可恢复的刷新失败：读库超时 / 连接异常，稍后会自动重试，与不可恢复的配置错误区分开。 */
+    PROVIDER_REFRESH_RETRYABLE(11013, "LLM Provider 配置刷新暂时失败，系统会自动重试");
 
     private final Integer code;
     private final String message;

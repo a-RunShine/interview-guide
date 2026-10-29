@@ -38,8 +38,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -142,13 +143,15 @@ class LlmProviderRegistryTest {
     }
 
     @Test
-    @DisplayName("Throw exception for unknown provider")
+    @DisplayName("Throw business exception for unknown provider")
     void testGetChatClient_UnknownProvider() {
         // Given
         when(properties.getProviders()).thenReturn(new HashMap<>());
 
         // When & Then
-        assertThrows(IllegalArgumentException.class, () -> registry.getChatClient("unknown"));
+        BusinessException ex = assertThrows(BusinessException.class, () -> registry.getChatClient("unknown"));
+        assertEquals(ErrorCode.PROVIDER_NOT_FOUND.getCode(), ex.getCode());
+        assertTrue(ex.getMessage().contains("unknown"), "异常信息应带上 provider id");
     }
 
     @Test
@@ -318,7 +321,7 @@ class LlmProviderRegistryTest {
         registry.getChatClient(providerId);
 
         AtomicBoolean stop = new AtomicBoolean(false);
-        ExecutorService readers = Executors.newFixedThreadPool(8);
+        ExecutorService readers = newReaderPool(8);
         List<Future<?>> inFlight = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
             inFlight.add(readers.submit(() -> {
@@ -371,7 +374,7 @@ class LlmProviderRegistryTest {
 
         LlmProviderRegistry isolated =
             new LlmProviderRegistry(properties, null, globalRepo, null, null, null, null);
-        ExecutorService executor = Executors.newSingleThreadExecutor();
+        ExecutorService executor = newSingleThreadPool();
         try {
             Future<ChatClient> inFlight = executor.submit(isolated::getDefaultChatClient);
             assertTrue(entered.await(5, TimeUnit.SECONDS));
@@ -540,7 +543,7 @@ class LlmProviderRegistryTest {
 
             AtomicBoolean stop = new AtomicBoolean(false);
             AtomicReference<String> mixed = new AtomicReference<>();
-            ExecutorService readers = Executors.newFixedThreadPool(8);
+            ExecutorService readers = newReaderPool(8);
             List<Future<?>> inFlight = new ArrayList<>();
             for (int i = 0; i < 8; i++) {
                 inFlight.add(readers.submit(() -> {
@@ -632,16 +635,16 @@ class LlmProviderRegistryTest {
         }
 
         @Test
-        @DisplayName("首次 refresh 之前状态已是 READY，并且带有构建时间")
-        void statusHasBuiltAtBeforeFirstRefresh() {
+        @DisplayName("首次 refresh 之前状态是 READY，但最近成功时间为 null（不伪造一次成功）")
+        void statusHasNoSuccessTimeBeforeFirstRefresh() {
             MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
             LlmProviderRegistry registry = newRegistry(clock);
 
             LlmProviderRegistry.CacheStatus ready = registry.status();
 
             assertEquals("READY", ready.stateName());
-            assertEquals(Instant.parse("2026-01-01T00:00:00Z"), ready.lastSuccessAt(),
-                "READY 状态下必须能给出最近成功时间");
+            assertNull(ready.lastSuccessAt(),
+                "没有任何一次成功刷新时，最近成功时间必须为 null，不能拿进程启动时间冒充");
             assertNull(ready.lastFailureReason());
         }
 
@@ -660,6 +663,73 @@ class LlmProviderRegistryTest {
                 LlmProviderProperties.DEFAULT_REFRESH_GRACE_DURATION.toSeconds(),
                 registry.status().graceSecondsRemaining(),
                 "兜底值来自 LlmProviderProperties，只应有一份");
+        }
+
+        @Test
+        @DisplayName("默认向量 Provider 不支持 Embedding 时构建阶段就失败，不等第一次向量化")
+        void embeddingProviderWithoutEmbeddingSupportFailsAtBuildTime() {
+            when(providerRepository.findByEnabledTrueOrderByIdAsc())
+                .thenReturn(List.of(entity("p1", "model-v1"), chatOnlyEntity("p2")));
+            when(encryptionService.decrypt("nonce", "cipher")).thenReturn("key-1");
+            when(globalSettingRepository.findById(LlmGlobalSettingEntity.SINGLETON_ID))
+                .thenReturn(Optional.of(globalSetting("p1", "p2")));
+
+            LlmProviderRegistry.RefreshResult result = newRegistry().refresh();
+
+            assertFalse(result.success(), "默认向量 Provider 不支持 Embedding 应在保存时就失败");
+            assertFalse(result.retryable(), "配置类错误不可恢复");
+            assertTrue(result.failureReason().contains("p2"), "原因应指出是哪个 Provider：" + result.failureReason());
+        }
+
+        @Test
+        @DisplayName("默认向量 Provider 把聊天模型填成向量模型时构建阶段就失败")
+        void embeddingModelThatLooksLikeChatModelFailsAtBuildTime() {
+            when(providerRepository.findByEnabledTrueOrderByIdAsc())
+                .thenReturn(List.of(entity("p1", "model-v1"), chatModelAsEmbeddingEntity("dashscope")));
+            when(encryptionService.decrypt("nonce", "cipher")).thenReturn("key-1");
+            when(globalSettingRepository.findById(LlmGlobalSettingEntity.SINGLETON_ID))
+                .thenReturn(Optional.of(globalSetting("p1", "dashscope")));
+
+            LlmProviderRegistry.RefreshResult result = newRegistry().refresh();
+
+            assertFalse(result.success(), "向量模型配成聊天模型应在保存时就失败");
+            assertFalse(result.retryable());
+            assertTrue(result.failureReason().contains("qwen-plus"),
+                "原因应带上配错的模型名：" + result.failureReason());
+            assertTrue(result.failureReason().contains("text-embedding-v3"),
+                "已知厂商应给出推荐模型：" + result.failureReason());
+            assertTrue(result.failureReason().contains("dashscope"),
+                "原因应指出是哪个 Provider：" + result.failureReason());
+        }
+
+        private LlmProviderEntity chatOnlyEntity(String id) {
+            return LlmProviderEntity.builder()
+                .id(id)
+                .baseUrl("http://localhost:1234/v1")
+                .apiKeyNonce("nonce")
+                .apiKeyCiphertext("cipher")
+                .model("model-" + id)
+                .supportsEmbedding(false)
+                .temperature(0.2)
+                .enabled(true)
+                .builtin(true)
+                .build();
+        }
+
+        private LlmProviderEntity chatModelAsEmbeddingEntity(String id) {
+            return LlmProviderEntity.builder()
+                .id(id)
+                .baseUrl("http://localhost:1234/v1")
+                .apiKeyNonce("nonce")
+                .apiKeyCiphertext("cipher")
+                .model("model-" + id)
+                .embeddingModel("qwen-plus")
+                .embeddingDimensions(1024)
+                .supportsEmbedding(true)
+                .temperature(0.2)
+                .enabled(true)
+                .builtin(true)
+                .build();
         }
 
         private LlmProviderRegistry newRegistry() {
@@ -745,7 +815,7 @@ class LlmProviderRegistryTest {
             assertFalse(LlmProviderRegistry.FailureClassifier.isRetryable(
                 new BusinessException(ErrorCode.PROVIDER_CONFIG_READ_FAILED, "解密失败")));
             assertFalse(LlmProviderRegistry.FailureClassifier.isRetryable(
-                new IllegalArgumentException("Unknown LLM provider: p1")));
+                new BusinessException(ErrorCode.PROVIDER_NOT_FOUND, "Unknown LLM provider: p1")));
         }
 
         @Test
@@ -770,7 +840,7 @@ class LlmProviderRegistryTest {
             assertTrue(registry.refresh().success());
             ChatClient before = registry.getChatClient("p1");
 
-            ExecutorService executor = Executors.newSingleThreadExecutor();
+            ExecutorService executor = newSingleThreadPool();
             try {
                 Future<LlmProviderRegistry.RefreshResult> refresh = executor.submit(registry::refresh);
                 assertTrue(decrypting.await(5, TimeUnit.SECONDS));
@@ -831,7 +901,30 @@ class LlmProviderRegistryTest {
         }
     }
 
-    private static LlmGlobalSettingEntity globalSetting(String providerId) {
+    /**
+   * 并发测试用的显式线程池：守护线程 + 有界队列，遵循 AGENTS.md 的
+   * "不要使用 Executors.newXxxThreadPool()"。
+   */
+  private static ExecutorService newReaderPool(int threads) {
+    return new ThreadPoolExecutor(
+        threads,
+        threads,
+        0L,
+        TimeUnit.MILLISECONDS,
+        new LinkedBlockingQueue<>(256),
+        runnable -> {
+          Thread thread = new Thread(runnable, "registry-reader");
+          thread.setDaemon(true);
+          return thread;
+        });
+  }
+
+  /** 单线程、守护线程、有界队列的显式线程池，替代 {@code Executors.newSingleThreadExecutor()}。 */
+  private static ExecutorService newSingleThreadPool() {
+    return newReaderPool(1);
+  }
+
+  private static LlmGlobalSettingEntity globalSetting(String providerId) {
         LlmGlobalSettingEntity entity = new LlmGlobalSettingEntity();
         entity.setDefaultChatProviderId(providerId);
         return entity;

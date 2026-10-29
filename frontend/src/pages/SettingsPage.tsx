@@ -15,12 +15,11 @@ import type {
 } from '../types/llmProvider';
 import {
   formatGraceRemaining,
+  formatLastSuccessAt,
   getCacheStatusPresentation,
   getReloadNotice,
-  shouldPollCacheStatus,
 } from './llmProviderCacheStatus';
 import type { CacheStatusTone } from './llmProviderCacheStatus';
-import { formatDateTime } from '../utils/date';
 
 // Provider 预设：已知 Provider 的 Base URL、推荐模型和向量模型
 const PROVIDER_PRESETS: Record<string, {
@@ -302,14 +301,9 @@ export default function SettingsPage() {
     await Promise.all([loadData(), loadCacheStatus()]);
   }, [loadData, loadCacheStatus]);
 
-  // 刷新中与宽限中的状态会自己变化，按固定间隔轮询；其他状态等用户操作。
-  useEffect(() => {
-    if (!shouldPollCacheStatus(cacheStatus?.state)) return;
-    const timer = window.setInterval(() => {
-      loadCacheStatus();
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, [cacheStatus?.state, loadCacheStatus]);
+  // 不轮询：/cache-status 是 GLOBAL 维度的限流接口，一个开着的设置页按 5 秒轮询
+  // 会吃掉 12 次/分钟的全局限额，可能饿死其他用户。状态只在两个时机刷新：
+  // 页面加载时，以及每个会改变缓存的操作（保存 / 删除 / 切换默认 / 手动刷新）之后。
 
   const handleReload = async () => {
     setReloading(true);
@@ -719,7 +713,7 @@ export default function SettingsPage() {
                   <div className="flex flex-wrap items-center gap-x-2">
                     <dt>最近成功</dt>
                     <dd className="font-medium text-slate-700 dark:text-slate-200">
-                      {formatDateTime(cacheStatus?.lastSuccessAt)}
+                      {formatLastSuccessAt(cacheStatus?.lastSuccessAt)}
                     </dd>
                   </div>
                   {cacheGrace && (

@@ -4,9 +4,9 @@ import test from 'node:test';
 import { toReloadResult } from '../api/llmProviderReload.ts';
 import {
   formatGraceRemaining,
+  formatLastSuccessAt,
   getCacheStatusPresentation,
   getReloadNotice,
-  shouldPollCacheStatus,
 } from './llmProviderCacheStatus.ts';
 
 test('四种缓存状态翻译成约定文案，并带上对应的语气', () => {
@@ -76,12 +76,18 @@ test('刷新失败但没有原因时不吞掉失败，给出兜底文案', () =>
   });
 });
 
-test('只有刷新中或宽限中才需要轮询状态', () => {
-  assert.equal(shouldPollCacheStatus('REFRESHING'), true);
-  assert.equal(shouldPollCacheStatus('STALE'), true);
-  assert.equal(shouldPollCacheStatus('READY'), false);
-  assert.equal(shouldPollCacheStatus('EXPIRED'), false);
-  assert.equal(shouldPollCacheStatus(null), false);
+test('最近成功时间为 null 时展示"尚未刷新"，不伪造一次成功', () => {
+  assert.equal(formatLastSuccessAt(null), '尚未刷新');
+  assert.equal(formatLastSuccessAt(undefined), '尚未刷新');
+  assert.equal(formatLastSuccessAt(''), '尚未刷新');
+  assert.equal(formatLastSuccessAt('not-a-date'), '尚未刷新');
+});
+
+test('最近成功时间有值时格式化成中文日期时间', () => {
+  const formatted = formatLastSuccessAt('2026-10-28T08:00:00Z');
+  assert.ok(formatted !== '尚未刷新');
+  assert.match(formatted, /2026/);
+  assert.match(formatted, /\d{2}:\d{2}/);
 });
 
 test('手动刷新失败时仍能从 Result.error 的 data 里读到真实的 retryable', () => {

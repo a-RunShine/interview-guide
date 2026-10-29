@@ -59,7 +59,8 @@ class LlmProviderCacheServiceTest {
 
         Result<LlmProviderReloadResponse> result = cacheService.reloadProviders();
 
-        assertThat(result.getCode()).isEqualTo(ErrorCode.PROVIDER_CONFIG_READ_FAILED.getCode());
+        // 可恢复失败不能报成"读取配置失败 + 会自动重试"的矛盾组合
+        assertThat(result.getCode()).isEqualTo(ErrorCode.PROVIDER_REFRESH_RETRYABLE.getCode());
         assertThat(result.getMessage()).isEqualTo("读取 Provider 配置失败");
         assertThat(result.getData()).isNotNull();
         assertThat(result.getData().success()).isFalse();
@@ -67,6 +68,18 @@ class LlmProviderCacheServiceTest {
         assertThat(result.getData().failureReason()).isEqualTo("读取 Provider 配置失败");
         assertThat(result.getData().retryable()).isTrue();
         verify(refresher).refreshAndScheduleRetry();
+    }
+
+    @Test
+    @DisplayName("不可恢复的失败仍使用配置错误码，与 retryable=false 自洽")
+    void shouldUseConfigErrorCodeForNonRetryableFailure() {
+        RefreshResult refreshed = new RefreshResult(false, null, "Provider 'p1' 已被禁用", false);
+        when(refresher.refreshAndScheduleRetry()).thenReturn(refreshed);
+
+        Result<LlmProviderReloadResponse> result = cacheService.reloadProviders();
+
+        assertThat(result.getCode()).isEqualTo(ErrorCode.PROVIDER_CONFIG_READ_FAILED.getCode());
+        assertThat(result.getData().retryable()).isFalse();
     }
 
     @Test

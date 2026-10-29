@@ -94,6 +94,8 @@ public class LlmProviderRegistry {
     private final MeterRegistry meterRegistry;
 
     private volatile boolean refreshing;
+    /** 最近一次真正成功刷新的时间；首次刷新成功之前为 null，状态查询如实报告"尚未刷新"。 */
+    private volatile Instant lastSuccessfulRefreshAt;
     private volatile String lastFailureReason;
     private volatile boolean lastFailureRetryable;
     /** 本次构建失败时正在校验的 provider id，只用于日志，不参与业务判断。 */
@@ -165,9 +167,9 @@ public class LlmProviderRegistry {
         this.observationRegistry = observationRegistry;
         this.interviewSkillsToolCallback = interviewSkillsToolCallback;
         this.clock = clock != null ? clock : Clock.systemUTC();
-        // 懒加载的一代在构造时就带上构建时间：首次 refresh() 之前状态已经是 READY，
-        // 状态查询必须能给出时间戳，否则前端会显示"最新"却没有最近成功时间。
-        this.generation.set(Generation.lazy(this.clock.instant()));
+        // 懒加载的一代：状态是 READY（可以按需构建客户端），但它并不是"校验成功过一代"，
+        // 因此最近成功时间保持 null，状态查询会如实报告"尚未刷新"。
+        this.generation.set(Generation.lazy());
         this.graceDuration = resolveGraceDuration(properties);
         this.meterRegistry = meterRegistry;
         registerCacheStateGauge();
@@ -202,7 +204,8 @@ public class LlmProviderRegistry {
      *
      * @param providerId The ID of the provider (e.g., "dashscope", "lmstudio")
      * @return A ChatClient instance
-     * @throws IllegalArgumentException if the providerId is unknown
+     * @throws BusinessException if the providerId is unknown; the code is
+     *     {@link ErrorCode#PROVIDER_NOT_FOUND}
      */
     public ChatClient getChatClient(String providerId) {
         Generation current = currentServingGeneration();
@@ -272,6 +275,8 @@ public class LlmProviderRegistry {
             try {
                 Generation candidate = buildGeneration();
                 generation.set(candidate);
+                // 换代完成之后再记时间：状态查询不会出现"已经报告成功、但请求还在用旧一代"的窗口。
+                lastSuccessfulRefreshAt = candidate.builtAt;
                 clearGrace();
                 log.info("[LlmProviderRegistry] Refresh succeeded with {} providers",
                     candidate.validatedSnapshots.size());
@@ -329,7 +334,10 @@ public class LlmProviderRegistry {
     }
 
     /**
-     * 查询当前缓存状态：状态名、最近成功时间、最近失败原因、宽限剩余秒数、失败是否可重试。
+     * 查询当前缓存状态：状态名、最近成功刷新时间、最近失败原因、宽限剩余秒数、失败是否可重试。
+     *
+     * <p>{@code lastSuccessAt} 只表示"最近一次校验成功并完成整代替换"的时间；首次
+     * {@link #refresh()} 成功之前它是 {@code null}，不会拿进程启动时间去冒充一次成功。
      */
     public CacheStatus status() {
         Instant deadline = graceDeadline.get();
@@ -338,7 +346,7 @@ public class LlmProviderRegistry {
             : Duration.between(clock.instant(), deadline).toMillis();
         return new CacheStatus(
             currentState(deadline, graceRemainingMillis),
-            generation.get().builtAt,
+            lastSuccessfulRefreshAt,
             lastFailureReason,
             Math.max(0L, graceRemainingMillis / 1000L),
             lastFailureRetryable);
@@ -463,7 +471,42 @@ public class LlmProviderRegistry {
                 .filter(id -> !isBlank(id))
                 .orElseGet(this::defaultEmbeddingProviderFromProperties),
             "默认向量");
+        // 默认向量 Provider 也要在构建阶段就校验：否则"选了一个不支持 Embedding 的 Provider"
+        // 或"把聊天模型填成向量模型"要等到第一次知识库向量化才暴露。
+        validateEmbeddingProvider(snapshots.get(embeddingProviderId), embeddingProviderId);
         return Generation.validated(snapshots, chatProviderId, embeddingProviderId, builtAt);
+    }
+
+    /**
+     * 构建阶段的向量校验：默认向量 Provider 必须支持 Embedding、配了 embeddingModel，
+     * 且该模型名不能是聊天模型。与 {@link #createEmbeddingModel} 的守卫保持一致，
+     * 后者作为纵深防御保留。
+     */
+    private void validateEmbeddingProvider(ProviderSnapshot snapshot, String providerId) {
+        if (snapshot == null) {
+            return;
+        }
+        failedProviderId = providerId;
+        if (!snapshot.supportsEmbedding() || isBlank(snapshot.embeddingModel())) {
+            throw new BusinessException(
+                ErrorCode.PROVIDER_CONFIG_READ_FAILED,
+                "默认向量 Provider '" + providerId + "' 未配置可用的 Embedding 模型，无法执行知识库向量化");
+        }
+        if (looksLikeChatModel(snapshot.embeddingModel())) {
+            throw new BusinessException(
+                ErrorCode.PROVIDER_CONFIG_READ_FAILED,
+                embeddingModelLooksLikeChatModelMessage(providerId, snapshot.embeddingModel()));
+        }
+    }
+
+    /** 聊天模型被填进 embeddingModel 时的统一提示，构建期校验与创建期守卫共用。 */
+    private String embeddingModelLooksLikeChatModelMessage(String providerId, String embeddingModel) {
+        String recommendation = RECOMMENDED_EMBEDDING_MODELS.get(providerId.toLowerCase());
+        String suffix = recommendation != null
+            ? "，推荐填写 " + recommendation
+            : "，请填写该厂商真实的 Embedding 模型名";
+        return "Provider '" + providerId + "' 的 Embedding Model 配成了聊天模型 '"
+            + embeddingModel + "'" + suffix;
     }
 
     private String requireEnabledProvider(
@@ -650,18 +693,14 @@ public class LlmProviderRegistry {
 
     private EmbeddingModel createEmbeddingModel(Generation current, String providerId) {
         ProviderSnapshot config = loadProviderOrThrow(current, providerId);
+        // 纵深防御：构建期已校验默认向量 Provider，这里拦住"直接按 id 取非默认 Provider"的调用。
         if (!config.supportsEmbedding() || isBlank(config.embeddingModel())) {
             throw new BusinessException(ErrorCode.PROVIDER_CONFIG_READ_FAILED,
                 "Provider '" + providerId + "' 未配置可用的 Embedding 模型，无法执行知识库向量化");
         }
         if (looksLikeChatModel(config.embeddingModel())) {
-            String recommendation = RECOMMENDED_EMBEDDING_MODELS.get(providerId.toLowerCase());
-            String suffix = recommendation != null
-                ? "，推荐填写 " + recommendation
-                : "，请填写该厂商真实的 Embedding 模型名";
             throw new BusinessException(ErrorCode.PROVIDER_CONFIG_READ_FAILED,
-                "Provider '" + providerId + "' 的 Embedding Model 配成了聊天模型 '"
-                    + config.embeddingModel() + "'" + suffix);
+                embeddingModelLooksLikeChatModelMessage(providerId, config.embeddingModel()));
         }
         log.info("[LlmProviderRegistry] Building EmbeddingModel - Provider: {}, BaseUrl: {}, Model: {}",
             providerId, config.baseUrl(), config.embeddingModel());
@@ -782,11 +821,21 @@ public class LlmProviderRegistry {
             ProviderSnapshot snapshot = current.validatedSnapshots.get(providerId);
             if (snapshot == null) {
                 log.error("[LlmProviderRegistry] Provider config not found: {}", providerId);
-                throw new IllegalArgumentException("Unknown LLM provider: " + providerId);
+                throw unknownProvider(providerId);
             }
             return snapshot;
         }
         return current.lazySnapshots.computeIfAbsent(providerId, this::loadSeedSnapshot);
+    }
+
+    /**
+     * 请求路径上的"Provider 不存在 / 已禁用"是业务失败，统一用 {@link BusinessException}
+     * + {@link ErrorCode#PROVIDER_NOT_FOUND}，由全局异常处理器转成 {@code Result.error}。
+     */
+    private BusinessException unknownProvider(String providerId) {
+        return new BusinessException(
+            ErrorCode.PROVIDER_NOT_FOUND,
+            "Unknown LLM provider: " + providerId);
     }
 
     /**
@@ -798,7 +847,7 @@ public class LlmProviderRegistry {
         }
         LlmProviderEntity entity = providerRepository.findById(providerId)
             .filter(LlmProviderEntity::isEnabled)
-            .orElseThrow(() -> new IllegalArgumentException("Unknown LLM provider: " + providerId));
+            .orElseThrow(() -> unknownProvider(providerId));
         return new ProviderSnapshot(
             entity.getId(),
             entity.getBaseUrl(),
@@ -815,7 +864,7 @@ public class LlmProviderRegistry {
         ProviderConfig config = properties.getProviders().get(providerId);
         if (config == null) {
             log.error("[LlmProviderRegistry] Provider config not found: {}", providerId);
-            throw new IllegalArgumentException("Unknown LLM provider: " + providerId);
+            throw unknownProvider(providerId);
         }
         boolean supportsEmbedding = Boolean.TRUE.equals(config.getSupportsEmbedding())
             || !isBlank(config.getEmbeddingModel());
@@ -958,8 +1007,10 @@ public class LlmProviderRegistry {
             this.builtAt = builtAt;
         }
 
-        private static Generation lazy(Instant builtAt) {
-            return new Generation(null, null, null, builtAt);
+        private static Generation lazy() {
+            // 懒加载的一代没有"成功刷新时间"：builtAt 只在 buildGeneration() 里产生，
+            // 由 LlmProviderRegistry 单独记录为 lastSuccessfulRefreshAt。
+            return new Generation(null, null, null, null);
         }
 
         private static Generation validated(

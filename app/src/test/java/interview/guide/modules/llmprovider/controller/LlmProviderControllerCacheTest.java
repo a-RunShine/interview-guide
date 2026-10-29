@@ -51,15 +51,15 @@ class LlmProviderControllerCacheTest {
     @Test
     @DisplayName("手动刷新失败时透传 Service 的结果而不是自己编错误码")
     void shouldDelegateFailureResultToService() {
-        String reason = "Provider 'dashscope' 的 baseUrl 未配置";
+        String reason = "读库超时：connection timeout";
         LlmProviderReloadResponse failed = new LlmProviderReloadResponse(false, null, reason, true);
         Result<LlmProviderReloadResponse> serviceResult =
-            Result.error(ErrorCode.PROVIDER_CONFIG_READ_FAILED, reason, failed);
+            Result.error(ErrorCode.PROVIDER_REFRESH_RETRYABLE, reason, failed);
         when(cacheService.reloadProviders()).thenReturn(serviceResult);
 
         Result<LlmProviderReloadResponse> result = controller.reloadProviders();
 
-        assertThat(result.getCode()).isEqualTo(ErrorCode.PROVIDER_CONFIG_READ_FAILED.getCode());
+        assertThat(result.getCode()).isEqualTo(ErrorCode.PROVIDER_REFRESH_RETRYABLE.getCode());
         assertThat(result.getMessage()).isEqualTo(reason);
         assertThat(result.getData()).isSameAs(failed);
         assertThat(result.getData().success()).isFalse();

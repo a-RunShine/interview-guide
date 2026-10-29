@@ -88,7 +88,21 @@ export function getReloadNotice(result: {
   return { tone: 'error', text: `刷新失败：${reason}（${hint}）` };
 }
 
-/** 刷新中与宽限期内状态还会自己变化，需要继续轮询；其余状态等用户操作即可。 */
-export function shouldPollCacheStatus(state?: string | null): boolean {
-  return state === 'REFRESHING' || state === 'STALE';
+/**
+ * "最近成功"时间的展示文案。
+ *
+ * 后端只在真正成功刷新过一次之后才给出 `lastSuccessAt`：进程刚启动、还没刷新过时是 null。
+ * 这时必须显示"尚未刷新"，而不是空白（看起来像加载失败）或拿页面加载时间冒充成功时间。
+ */
+export function formatLastSuccessAt(timestamp?: string | null): string {
+  if (!timestamp) return '尚未刷新';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '尚未刷新';
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }

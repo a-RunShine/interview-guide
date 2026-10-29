@@ -24,8 +24,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -175,7 +176,7 @@ class LlmProviderRegistryMetricsTest {
     });
 
     LlmProviderRegistry registry = newRegistry(meterRegistry);
-    ExecutorService executor = Executors.newSingleThreadExecutor();
+    ExecutorService executor = newSingleThreadPool();
     try {
       Future<LlmProviderRegistry.RefreshResult> refresh = executor.submit(registry::refresh);
       assertTrue(entered.await(5, TimeUnit.SECONDS));
@@ -292,6 +293,23 @@ class LlmProviderRegistryMetricsTest {
     Logger logger = (Logger) LoggerFactory.getLogger(LlmProviderRegistry.class);
     logger.detachAppender(appender);
     appender.stop();
+  }
+
+  /**
+   * 并发测试用的显式线程池：守护线程 + 有界队列，替代 {@code Executors.newSingleThreadExecutor()}。
+   */
+  private static ExecutorService newSingleThreadPool() {
+    return new ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        new LinkedBlockingQueue<>(64),
+        runnable -> {
+          Thread thread = new Thread(runnable, "metrics-test-worker");
+          thread.setDaemon(true);
+          return thread;
+        });
   }
 
   private static LlmGlobalSettingEntity globalSetting(String providerId) {

@@ -5,6 +5,7 @@ import interview.guide.common.ai.LlmProviderRegistry.CacheStatus;
 import interview.guide.common.ai.LlmProviderRegistry.RefreshResult;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -28,10 +29,17 @@ import java.util.concurrent.atomic.AtomicReference;
  * 就不再重试；失败变为不可恢复立即停止；可恢复则按递增退避继续，次数耗尽由
  * {@link LlmProviderRegistry#markGraceExpired()} 把状态推进到 {@link CacheState#EXPIRED}。
  *
- * <p>并发上界由两道显式闸门保证，不依赖执行器队列：{@link #chainInFlight} 保证同一时刻最多
- * 一条重试链，{@link #attemptPending} 保证同一时刻最多一次待执行的尝试。超出的刷新结果被合并到
- * 已有链上（它的下一次尝试会重新读状态），因此无论调度器自身的延迟队列是否无界，排队深度都
- * 不超过 1。执行器的拒绝策略只是关停时的兜底，不是上界的来源。
+ * <p><strong>有界性由准入闸门保证，不由执行器队列容量保证。</strong>JDK 的
+ * {@link ScheduledThreadPoolExecutor} 只有无界的 {@code DelayedWorkQueue}，无法配置为有界队列，
+ * 因此这里的上界来自两道显式闸门：
+ * <ul>
+ *   <li>{@link #chainInFlight}：同一时刻最多一条重试链；重复的可恢复失败被合并进已有链，
+ *       它的下一次尝试会重新读取真实状态，不会排成第二条链。</li>
+ *   <li>{@link #attemptPending}：同一时刻最多一次已经排期但尚未开始的尝试；准入被占用时直接
+ *       放弃本次排期（不是放进队列等），因此调度器的延迟队列中永远最多 1 个任务。</li>
+ * </ul>
+ * 也就是说，无论多少并发的刷新失败到达，排队深度都是 1，内存不会随失败次数增长。
+ * 执行器的拒绝策略只覆盖"执行器已关停"的兜底场景，不参与上界计算。
  */
 @Component
 @Slf4j
@@ -56,10 +64,18 @@ public class LlmProviderRefreshRetrier {
   /** 已排期的那次尝试，停止重试链时用来把它从队列里摘掉并归还准入许可。 */
   private final AtomicReference<ScheduledFuture<?>> pendingAttempt = new AtomicReference<>();
 
+  @Autowired
   public LlmProviderRefreshRetrier(LlmProviderRegistry registry) {
     this(registry, newSingleThreadScheduler());
   }
 
+  /**
+   * 测试用构造器：注入可手动驱动的调度器，让重试测试不依赖真实等待。
+   *
+   * <p>包级可见，Spring 不会把它当作候选构造器（生产装配只走 {@link #LlmProviderRefreshRetrier(
+   * LlmProviderRegistry)}，并用 {@code @Autowired} 显式标注，避免出现"两个构造器都无法自动选择"
+   * 的启动失败）。
+   */
   LlmProviderRefreshRetrier(LlmProviderRegistry registry, ScheduledExecutorService executor) {
     this.registry = registry;
     this.executor = executor;
